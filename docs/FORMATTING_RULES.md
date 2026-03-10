@@ -1,7 +1,6 @@
 # Prettier Markdown Formatting Rules
 
-This document defines every formatting rule our renderer applies, derived from
-[prettier's markdown formatter](https://github.com/prettier/prettier/tree/main/src/language-markdown).
+This document defines every formatting rule our renderer applies, derived from [prettier's markdown formatter](https://github.com/prettier/prettier/tree/main/src/language-markdown).
 
 Each rule references the prettier source file it was extracted from.
 
@@ -41,8 +40,7 @@ Setext heading
 - **Default marker:** `_` (underscore)
 - **Switch to `*`** when any of these conditions hold:
   1. Content is an autolink (e.g., `*<http://example.com>*`)
-  2. Adjacent word nodes lack trailing/leading punctuation — prevents `1_2_3` from
-     being interpreted as emphasis; `1*2*3` is valid emphasis
+  2. Adjacent word nodes lack trailing/leading punctuation — prevents `1_2_3` from being interpreted as emphasis; `1*2*3` is valid emphasis
   3. Nested inside another emphasis element
   4. Inside a strong element that itself has adjacent words without punctuation
 
@@ -65,24 +63,17 @@ _outer *inner nested* outer_
 
 **Source:** `print/word.js`
 
-Internal `*` or `_` characters that could open or close emphasis per CommonMark
-flanking delimiter run rules must be backslash-escaped.
+Internal `*` or `_` characters that could open or close emphasis per CommonMark flanking delimiter run rules must be backslash-escaped.
 
 **CommonMark flanking rules** (spec 0.31.2):
-- **Left-flanking:** not followed by whitespace AND (not followed by punctuation
-  OR preceded by whitespace/punctuation)
-- **Right-flanking:** not preceded by whitespace AND (not preceded by punctuation
-  OR followed by whitespace/punctuation)
+- **Left-flanking:** not followed by whitespace AND (not followed by punctuation OR preceded by whitespace/punctuation)
+- **Right-flanking:** not preceded by whitespace AND (not preceded by punctuation OR followed by whitespace/punctuation)
 - `*` can open/close if either left-flanking or right-flanking
-- `_` has stricter rules: left-flanking can open only if not right-flanking OR
-  preceded by punctuation; right-flanking can close only if not left-flanking OR
-  followed by punctuation
+- `_` has stricter rules: left-flanking can open only if not right-flanking OR preceded by punctuation; right-flanking can close only if not left-flanking OR followed by punctuation
 
 **Punctuation character set:**
-- ASCII: `!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~` plus U+3000 (ideographic space)
-  and U+FF5E (fullwidth tilde)
-- Unicode categories: Pc (Connector), Pd (Dash), Pe (Close), Pf (Final),
-  Pi (Initial), Po (Other), Ps (Open)
+- ASCII: `!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~` plus U+3000 (ideographic space) and U+FF5E (fullwidth tilde)
+- Unicode categories: Pc (Connector), Pd (Dash), Pe (Close), Pf (Final), Pi (Initial), Po (Other), Ps (Open)
 
 ---
 
@@ -90,8 +81,7 @@ flanking delimiter run rules must be backslash-escaped.
 
 **Source:** `print/mdast.js`
 
-- Surround with minimum backticks not present as a continuous run in the content
-  (e.g., if content contains `` ` ``, use ` `` `)
+- Surround with minimum backticks not present as a continuous run in the content (e.g., if content contains `` ` ``, use ` `` `)
 - **Pad with a space** when:
   - Content starts or ends with a backtick character
   - Content has leading AND trailing whitespace/newline AND contains non-whitespace
@@ -118,8 +108,7 @@ flanking delimiter run rules must be backslash-escaped.
 ### Regular Links
 
 - Format: `[text](url "title")` or `[text](url 'title')`
-- **URL wrapping:** Wrap URL in `<>` if it contains spaces or dangerous
-  characters (`)`, `<`, `>`)
+- **URL wrapping:** Wrap URL in `<>` if it contains spaces or dangerous characters (`)`, `<`, `>`)
 - Encode `<` and `>` in angle-bracket URLs
 
 ### Link Titles
@@ -149,8 +138,7 @@ flanking delimiter run rules must be backslash-escaped.
 - **Marker alternation between consecutive sibling lists** (NOT by nesting):
   - Even-indexed sibling lists: `-`
   - Odd-indexed sibling lists: `*`
-- The "nth sibling index" counts consecutive lists of the same ordered/unordered
-  type among parent's children
+- The "nth sibling index" counts consecutive lists of the same ordered/unordered type among parent's children
 - Nested lists inherit the marker from their sibling index context (typically 0 → `-`)
 - All marker types (`-`, `*`, `+`) normalized — `+` becomes `-`
 
@@ -170,24 +158,20 @@ flanking delimiter run rules must be backslash-escaped.
 - **Delimiter alternation by nesting depth:**
   - Even-indexed: `.` (e.g., `1. `)
   - Odd-indexed: `)` (e.g., `1) `)
-- **Git-diff-friendly lists:** Pattern `0. 1. 1. ...` preserved (repeated `1.`
-  after first item for clean diffs)
-- **Aligned lists:** When detected as aligned, prefix padded to `tabWidth`
-  boundaries
+- **Git-diff-friendly lists:** Pattern `0. 1. 1. ...` preserved (repeated `1.` after first item for clean diffs)
+- **Aligned lists:** When detected as aligned, prefix padded to `tabWidth` boundaries
 
 ### List Item Content
 
 - Checkbox syntax: `[x] ` (checked) or `[ ] ` (unchecked)
 - Content indented to align with prefix length
 - Continuation lines aligned with content start
-- Maximum 3 leading/trailing spaces in prefix to avoid accidental code blocks
-  (4+ spaces triggers indented code block interpretation)
+- Maximum 3 leading/trailing spaces in prefix to avoid accidental code blocks (4+ spaces triggers indented code block interpretation)
 
 ### Loose vs. Tight Lists
 
 - **Tight lists:** No blank line between items
-- **Loose lists:** Blank line between items (when `spread: true` or gap > 1 line
-  between items in source)
+- **Loose lists:** Blank line between items (when `spread: true` or gap > 1 line between items in source)
 - Preserved from source
 
 ---
@@ -283,8 +267,7 @@ flanking delimiter run rules must be backslash-escaped.
 
 ### Compact Mode (Future: proseWrap: "never")
 
-- When `proseWrap: "never"` and table exceeds print width, use compact mode
-  with minimum cell spacing
+- When `proseWrap: "never"` and table exceeds print width, use compact mode with minimum cell spacing
 
 ---
 
@@ -294,8 +277,7 @@ flanking delimiter run rules must be backslash-escaped.
 
 ### Blank Line Rules
 
-- **Single blank line** between block elements (paragraph, heading, code block,
-  blockquote, list, thematic break, HTML block)
+- **Single blank line** between block elements (paragraph, heading, code block, blockquote, list, thematic break, HTML block)
 - **No blank line** when:
   - Consecutive sibling nodes of type `listItem` or `definition`
   - Inside tight list items (except before nested lists)
@@ -315,8 +297,7 @@ flanking delimiter run rules must be backslash-escaped.
 **Source:** `print/mdast.js`
 
 - HTML comments: preserved with hard line breaks
-- Other HTML blocks: preserved with literal line breaks (marked as root to
-  avoid indentation)
+- Other HTML blocks: preserved with literal line breaks (marked as root to avoid indentation)
 - Trailing HTML at document root: trimmed at end
 
 ---
@@ -348,22 +329,19 @@ flanking delimiter run rules must be backslash-escaped.
 
 **Source:** `print/whitespace.js`, `utilities.js`
 
-These rules apply when `proseWrap: "always"` (future feature), but the character
-classification is needed for correctness even in "preserve" mode.
+These rules apply when `proseWrap: "always"` (future feature), but the character classification is needed for correctness even in "preserve" mode.
 
 #### Character Classification
 
 Text is split into word nodes classified by kind:
 - `KIND_NON_CJK`: Latin, numbers, ASCII punctuation sequences
-- `KIND_CJ_LETTER`: Chinese/Japanese characters (Han, Katakana, Hiragana,
-  Bopomofo — NOT Korean)
+- `KIND_CJ_LETTER`: Chinese/Japanese characters (Han, Katakana, Hiragana, Bopomofo — NOT Korean)
 - `KIND_K_LETTER`: Korean Hangul characters
 - `KIND_CJK_PUNCTUATION`: CJK-specific punctuation characters
 
 **CJK detection regex** covers:
 - Script_Extensions: Han, Katakana, Hiragana, Hangul, Bopomofo
-- General_Category: Other_Letter, Letter_Number, Other_Symbol, Modifier_Letter,
-  Modifier_Symbol, Nonspacing_Mark
+- General_Category: Other_Letter, Letter_Number, Other_Symbol, Modifier_Letter, Modifier_Symbol, Nonspacing_Mark
 - Variation Selectors (optional suffix)
 
 #### Line Break → Space Conversion Rules
@@ -382,15 +360,11 @@ When converting newlines to spaces:
 | CJ ↔ Unicode punctuation | (either direction) | No |
 | CJ ↔ Non-CJK | (no punctuation) | Check sentence context |
 
-**Sentence context check:** If the parent sentence predominantly uses spaces
-between CJ and non-CJK characters (more space nodes than empty nodes), treat
-the newline as a space. Otherwise, use empty string (no space).
+**Sentence context check:** If the parent sentence predominantly uses spaces between CJ and non-CJK characters (more space nodes than empty nodes), treat the newline as a space. Otherwise, use empty string (no space).
 
 #### "Fake" Whitespace (Empty String Nodes)
 
-Between CJK characters split from non-whitespace-separated text, empty string
-whitespace nodes are inserted. These are NOT converted to spaces — they represent
-CJK character joining without visible separation.
+Between CJK characters split from non-whitespace-separated text, empty string whitespace nodes are inserted. These are NOT converted to spaces — they represent CJK character joining without visible separation.
 
 ### Single-Line Constraints
 

@@ -4,38 +4,25 @@
 
 ### Interface Choice: NodeRenderer (not Renderer)
 
-We implement `renderer.NodeRenderer` (like goldmark-adf) rather than directly
-implementing `renderer.Renderer` (like goldmark-markdown).
+We implement `renderer.NodeRenderer` (like goldmark-adf) rather than directly implementing `renderer.Renderer` (like goldmark-markdown).
 
 **Rationale:**
-- `NodeRenderer` is the intended extension point — goldmark's built-in
-  `renderer.Renderer` already handles AST walking and dispatching
-- Registering via `NodeRendererFuncRegisterer` lets us plug into goldmark's
-  standard composition model
-- GFM extension nodes (tables, strikethrough, task checkboxes) register the
-  same way as core nodes — no special handling
-- Users can compose our renderer with other `NodeRenderer` implementations
-  via priority ordering
+- `NodeRenderer` is the intended extension point — goldmark's built-in `renderer.Renderer` already handles AST walking and dispatching
+- Registering via `NodeRendererFuncRegisterer` lets us plug into goldmark's standard composition model
+- GFM extension nodes (tables, strikethrough, task checkboxes) register the same way as core nodes — no special handling
+- Users can compose our renderer with other `NodeRenderer` implementations via priority ordering
 
-**Trade-off:** goldmark-markdown's direct `Renderer` approach gave it more
-control over the walk and custom function signatures. We give that up in
-exchange for better composability. The standard `NodeRendererFunc` signature
-`(w util.BufWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error)`
-provides everything we need.
+**Trade-off:** goldmark-markdown's direct `Renderer` approach gave it more control over the walk and custom function signatures. We give that up in exchange for better composability. The standard `NodeRendererFunc` signature `(w util.BufWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error)` provides everything we need.
 
 ### Writer Design
 
-We use a custom `markdownWriter` (inspired by goldmark-markdown) that wraps
-`util.BufWriter` and provides:
+We use a custom `markdownWriter` (inspired by goldmark-markdown) that wraps `util.BufWriter` and provides:
 
-1. **Line-buffered output** — content buffered until newline, enabling
-   trailing whitespace trimming
-2. **Prefix stack** — for blockquote `> ` and list item indentation prefixes,
-   with line-range scoping (prefix applies to line N through M)
+1. **Line-buffered output** — content buffered until newline, enabling trailing whitespace trimming
+2. **Prefix stack** — for blockquote `> ` and list item indentation prefixes, with line-range scoping (prefix applies to line N through M)
 3. **Trailing whitespace trimming** — every line is right-trimmed before output
 
-The writer is stored in render context, not on the renderer struct, to keep
-the renderer stateless across calls.
+The writer is stored in render context, not on the renderer struct, to keep the renderer stateless across calls.
 
 ### Render Context
 
@@ -61,46 +48,33 @@ GFM node types are registered in `RegisterFuncs` alongside core nodes:
 - `extast.KindStrikethrough` → `renderStrikethrough`
 - `extast.KindTaskCheckBox` → `renderTaskCheckBox`
 
-Table rendering requires a two-pass approach: first collect all cell content
-and measure widths, then format with column padding. This means the table
-renderer must skip the default walk for its children and handle them manually.
+Table rendering requires a two-pass approach: first collect all cell content and measure widths, then format with column padding. This means the table renderer must skip the default walk for its children and handle them manually.
 
 ### Setext Heading Detection
 
-Goldmark doesn't distinguish ATX from setext headings in the AST — both are
-`ast.Heading`. We need to detect setext to preserve them (matching prettier).
+Goldmark doesn't distinguish ATX from setext headings in the AST — both are `ast.Heading`. We need to detect setext to preserve them (matching prettier).
 
-**Approach:** For headings at level 1-2, look at the source immediately after
-the last content line's segment. If the very next line (after skipping a single
-newline and any blockquote markers/spaces) consists entirely of `=` or `-`
-characters, it's setext. This handles:
+**Approach:** For headings at level 1-2, look at the source immediately after the last content line's segment. If the very next line (after skipping a single newline and any blockquote markers/spaces) consists entirely of `=` or `-` characters, it's setext. This handles:
 
 - Simple setext: `Hello\n=====`
 - Setext inside blockquotes: `> Hello\n> =====`
-- Distinguishing from ATX followed by a list: `## Section\n\n- item`
-  (blank line between prevents false positive)
+- Distinguishing from ATX followed by a list: `## Section\n\n- item` (blank line between prevents false positive)
 
-The underline itself is NOT stored in the heading node — it was consumed by
-the parser. To preserve it, we read it from the source using the segment
-positions.
+The underline itself is NOT stored in the heading node — it was consumed by the parser. To preserve it, we read it from the source using the segment positions.
 
 ### Emphasis Marker Selection
 
-Prettier's emphasis marker logic requires knowledge of surrounding context
-(adjacent words, ancestor emphasis nodes). Our implementation:
+Prettier's emphasis marker logic requires knowledge of surrounding context (adjacent words, ancestor emphasis nodes). Our implementation:
 
 1. Default to `_` for emphasis
 2. Walk child nodes to check for autolinks
-3. Check if the emphasis node has adjacent word siblings without punctuation
-   boundaries (checking Text nodes adjacent to the Emphasis node's position
-   in the source)
+3. Check if the emphasis node has adjacent word siblings without punctuation boundaries (checking Text nodes adjacent to the Emphasis node's position in the source)
 4. Track emphasis nesting depth in renderContext
 5. For strong: always `**`
 
 ### List Marker Alternation
 
-Prettier alternates list markers between **consecutive sibling lists**, NOT
-by nesting depth. Nested lists inherit their parent's marker style:
+Prettier alternates list markers between **consecutive sibling lists**, NOT by nesting depth. Nested lists inherit their parent's marker style:
 
 ```
 - top level
@@ -112,18 +86,15 @@ by nesting depth. Nested lists inherit their parent's marker style:
 * list 2 (odd sibling index = asterisk)
 ```
 
-We track the "nth sibling index" — counting consecutive same-type lists among
-the parent's children. Even indices use `-`/`.`, odd use `*`/`)`.
+We track the "nth sibling index" — counting consecutive same-type lists among the parent's children. Even indices use `-`/`.`, odd use `*`/`)`.
 
 ### CJK Character Classification
 
-Prettier classifies characters into four kinds for whitespace handling:
-`KIND_NON_CJK`, `KIND_CJ_LETTER`, `KIND_K_LETTER`, `KIND_CJK_PUNCTUATION`.
+Prettier classifies characters into four kinds for whitespace handling: `KIND_NON_CJK`, `KIND_CJ_LETTER`, `KIND_K_LETTER`, `KIND_CJK_PUNCTUATION`.
 
 **Go implementation approach:**
 
-Go has excellent Unicode support via `unicode` and `unicode/utf8` packages.
-We can implement CJK detection using Unicode property tables:
+Go has excellent Unicode support via `unicode` and `unicode/utf8` packages. We can implement CJK detection using Unicode property tables:
 
 ```go
 // CJ letter: Han, Katakana, Hiragana, Bopomofo (NOT Hangul)
@@ -142,23 +113,15 @@ func isKLetter(r rune) bool {
 }
 ```
 
-Prettier also matches: Other_Letter, Letter_Number, Other_Symbol,
-Modifier_Letter, Modifier_Symbol, Nonspacing_Mark from Unicode general
-categories. We should include these for completeness, filtered to CJK
-script extensions.
+Prettier also matches: Other_Letter, Letter_Number, Other_Symbol, Modifier_Letter, Modifier_Symbol, Nonspacing_Mark from Unicode general categories. We should include these for completeness, filtered to CJK script extensions.
 
-For punctuation detection (CommonMark flanking rules), Go's `unicode`
-package provides the `Pc`, `Pd`, `Pe`, `Pf`, `Pi`, `Po`, `Ps` categories.
-We combine these with the ASCII punctuation set.
+For punctuation detection (CommonMark flanking rules), Go's `unicode` package provides the `Pc`, `Pd`, `Pe`, `Pf`, `Pi`, `Po`, `Ps` categories. We combine these with the ASCII punctuation set.
 
-**Note:** CJK classification is needed even in `proseWrap: "preserve"` mode
-for correct emphasis marker selection (adjacent word detection). The full
-whitespace conversion logic is only needed for `proseWrap: "always"` (future).
+**Note:** CJK classification is needed even in `proseWrap: "preserve"` mode for correct emphasis marker selection (adjacent word detection). The full whitespace conversion logic is only needed for `proseWrap: "always"` (future).
 
 ### CommonMark Flanking Delimiter Detection
 
-Prettier escapes internal `*` and `_` in emphasis/strong content when they
-could open or close emphasis per CommonMark rules. We implement this in Go:
+Prettier escapes internal `*` and `_` in emphasis/strong content when they could open or close emphasis per CommonMark rules. We implement this in Go:
 
 ```go
 func isLeftFlanking(preceding, following rune) bool {
@@ -177,12 +140,9 @@ func isRightFlanking(preceding, following rune) bool {
 ```
 
 For `*`: can open/close if left-flanking OR right-flanking.
-For `_`: stricter — left-flanking can open only if NOT right-flanking or
-preceded by punctuation.
+For `_`: stricter — left-flanking can open only if NOT right-flanking or preceded by punctuation.
 
-This logic runs on every word node inside emphasis/strong containers, checking
-each `*` or `_` character against its surrounding characters (including across
-node boundaries to adjacent siblings).
+This logic runs on every word node inside emphasis/strong containers, checking each `*` or `_` character against its surrounding characters (including across node boundaries to adjacent siblings).
 
 ---
 
@@ -291,8 +251,7 @@ goldmark-prettier-markdown/
 
 ### Future Work
 
-- [ ] `proseWrap: "always"` — sentence splitting, fill-mode wrapping, CJK-aware
-      line break conversion, print width targeting
+- [ ] `proseWrap: "always"` — sentence splitting, fill-mode wrapping, CJK-aware line break conversion, print width targeting
 - [ ] `proseWrap: "never"` — compact table mode, single-line prose
 - [ ] Footnote support
 - [ ] Definition list support
