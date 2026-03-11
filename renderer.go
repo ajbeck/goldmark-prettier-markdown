@@ -1064,8 +1064,9 @@ func (r *Renderer) renderTable(w util.BufWriter, source []byte, node ast.Node, e
 
 	// In "never" mode, use compact table (no padding) when the aligned
 	// table exceeds printWidth (prettier: group(ifBreak(compact, aligned))).
+	// PrintWidth <= 0 means unlimited — never go compact.
 	compact := false
-	if r.rc.config.ProseWrap == ProseWrapNever {
+	if r.rc.config.ProseWrap == ProseWrapNever && r.rc.config.PrintWidth > 0 {
 		alignedWidth := tableRowWidth(colWidths)
 		if alignedWidth > r.rc.config.PrintWidth {
 			compact = true
