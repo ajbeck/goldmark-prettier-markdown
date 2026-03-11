@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/yuin/goldmark/ast"
 	east "github.com/yuin/goldmark/extension/ast"
@@ -502,9 +503,33 @@ func (r *Renderer) renderText(w util.BufWriter, source []byte, node ast.Node, en
 		r.rc.w.WriteBytes([]byte("\\"))
 		r.rc.w.EndLine()
 	} else if n.SoftLineBreak() {
-		r.rc.w.EndLine()
+		if r.rc.config.ProseWrap == ProseWrapNever {
+			r.writeSoftLineBreakNever(text, n)
+		} else {
+			r.rc.w.EndLine()
+		}
 	}
 	return ast.WalkContinue, nil
+}
+
+// writeSoftLineBreakNever converts a soft line break to a space (or empty
+// for CJ-to-CJ transitions) when proseWrap is "never".
+func (r *Renderer) writeSoftLineBreakNever(text []byte, n *ast.Text) {
+	// Get the last rune of the current text.
+	preceding, _ := utf8.DecodeLastRune(text)
+
+	// Get the first rune of the next sibling's text.
+	var following rune
+	if next := n.NextSibling(); next != nil {
+		if nextText, ok := next.(*ast.Text); ok {
+			following, _ = utf8.DecodeRune(nextText.Value(r.rc.source))
+		}
+	}
+
+	if lineBreakCanBeConvertedToSpace(preceding, following) {
+		r.rc.w.WriteBytes([]byte(" "))
+	}
+	// else: CJ-to-CJ — emit nothing
 }
 
 func (r *Renderer) renderString(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -692,8 +717,7 @@ func isASCIILetterOrDigit(r rune) bool {
 
 // --- CJK character classification ---
 // These classify characters into the four kinds used by prettier for whitespace
-// handling. Currently used for emphasis marker selection; will be used for
-// proseWrap: "always" in the future.
+// handling. Used for emphasis marker selection and proseWrap line break conversion.
 
 // WordKind classifies a character for CJK-aware text processing.
 type WordKind int
@@ -728,6 +752,58 @@ func isCJKRange(r rune) bool {
 		unicode.Hangul,
 		unicode.Bopomofo,
 	)
+}
+
+// lineBreakCanBeConvertedToSpace returns true if a soft line break between the
+// preceding and following runes can be replaced with a space. This implements
+// prettier's lineBreakCanBeConvertedToSpace from whitespace.js.
+//
+// The general rule: CJ-to-CJ line breaks are removed (not replaced with space)
+// because CJ languages don't use spaces between words. All other combinations
+// get a space.
+func lineBreakCanBeConvertedToSpace(preceding, following rune) bool {
+	if preceding == 0 || following == 0 {
+		return true
+	}
+
+	prevKind := ClassifyRune(preceding)
+	nextKind := ClassifyRune(following)
+
+	isNonCJKOrK := func(k WordKind) bool {
+		return k == KindNonCJK || k == KindKLetter
+	}
+
+	// Non-CJK/Korean to Non-CJK/Korean: always space.
+	if isNonCJKOrK(prevKind) && isNonCJKOrK(nextKind) {
+		return true
+	}
+
+	// Korean ↔ CJ: always space.
+	if (prevKind == KindKLetter && nextKind == KindCJLetter) ||
+		(prevKind == KindCJLetter && nextKind == KindKLetter) {
+		return true
+	}
+
+	// Around CJK punctuation or between CJ letters: no space.
+	if prevKind == KindCJKPunctuation || nextKind == KindCJKPunctuation ||
+		(prevKind == KindCJLetter && nextKind == KindCJLetter) {
+		return false
+	}
+
+	// Between CJ and ASCII punctuation: space.
+	if isASCIIPunctuation(following) || isASCIIPunctuation(preceding) {
+		return true
+	}
+
+	// Default for CJ ↔ non-CJK: space (simplified from prettier's
+	// isInSentenceWithCJSpaces heuristic which examines the full sentence).
+	return true
+}
+
+// isASCIIPunctuation returns true for ASCII punctuation characters that prettier
+// treats as allowing a space when adjacent to CJ characters.
+func isASCIIPunctuation(r rune) bool {
+	return r >= '!' && r <= '~' && !isASCIILetterOrDigit(r)
 }
 
 // isInsideEmphasisOrStrong returns true if the node has an Emphasis ancestor.
@@ -986,16 +1062,26 @@ func (r *Renderer) renderTable(w util.BufWriter, source []byte, node ast.Node, e
 		return ast.WalkSkipChildren, nil
 	}
 
+	// In "never" mode, use compact table (no padding) when the aligned
+	// table exceeds printWidth (prettier: group(ifBreak(compact, aligned))).
+	compact := false
+	if r.rc.config.ProseWrap == ProseWrapNever {
+		alignedWidth := tableRowWidth(colWidths)
+		if alignedWidth > r.rc.config.PrintWidth {
+			compact = true
+		}
+	}
+
 	// Pass 2: format and output.
 	// Header row.
-	r.writeTableRow(rows[0], colWidths, table.Alignments)
+	r.writeTableRow(rows[0], colWidths, table.Alignments, compact)
 
 	// Alignment row.
-	r.writeAlignmentRow(colWidths, table.Alignments)
+	r.writeAlignmentRow(colWidths, table.Alignments, compact)
 
 	// Data rows.
 	for _, row := range rows[1:] {
-		r.writeTableRow(row, colWidths, table.Alignments)
+		r.writeTableRow(row, colWidths, table.Alignments, compact)
 	}
 
 	return ast.WalkSkipChildren, nil
@@ -1104,32 +1190,49 @@ type cellInfo struct {
 	width int
 }
 
-func (r *Renderer) writeTableRow(cells []cellInfo, colWidths []int, alignments []east.Alignment) {
+// tableRowWidth returns the total character width of an aligned table row
+// given the column widths: `| ` + content + ` |` for each column.
+func tableRowWidth(colWidths []int) int {
+	// "| col1 | col2 | col3 |" → 1 + sum(1 + width + 1 + 1) for each col
+	width := 1 // leading "|"
+	for _, cw := range colWidths {
+		width += 1 + cw + 1 + 1 // " " + content + " " + "|"
+	}
+	return width
+}
+
+func (r *Renderer) writeTableRow(cells []cellInfo, colWidths []int, alignments []east.Alignment, compact bool) {
 	r.rc.w.WriteBytes([]byte("|"))
 	for i, cell := range cells {
-		width := colWidths[i]
-		align := east.AlignNone
-		if i < len(alignments) {
-			align = alignments[i]
+		if compact {
+			r.rc.w.WriteBytes([]byte(" "))
+			r.rc.w.WriteBytes([]byte(cell.text))
+			r.rc.w.WriteBytes([]byte(" |"))
+		} else {
+			width := colWidths[i]
+			align := east.AlignNone
+			if i < len(alignments) {
+				align = alignments[i]
+			}
+			spaces := width - cell.width
+			before := 0
+			if align == east.AlignRight {
+				before = spaces
+			} else if align == east.AlignCenter {
+				before = spaces / 2
+			}
+			after := spaces - before
+			r.rc.w.WriteBytes([]byte(" "))
+			r.rc.w.WriteBytes(bytes.Repeat([]byte(" "), before))
+			r.rc.w.WriteBytes([]byte(cell.text))
+			r.rc.w.WriteBytes(bytes.Repeat([]byte(" "), after))
+			r.rc.w.WriteBytes([]byte(" |"))
 		}
-		spaces := width - cell.width
-		before := 0
-		if align == east.AlignRight {
-			before = spaces
-		} else if align == east.AlignCenter {
-			before = spaces / 2
-		}
-		after := spaces - before
-		r.rc.w.WriteBytes([]byte(" "))
-		r.rc.w.WriteBytes(bytes.Repeat([]byte(" "), before))
-		r.rc.w.WriteBytes([]byte(cell.text))
-		r.rc.w.WriteBytes(bytes.Repeat([]byte(" "), after))
-		r.rc.w.WriteBytes([]byte(" |"))
 	}
 	r.rc.w.EndLine()
 }
 
-func (r *Renderer) writeAlignmentRow(colWidths []int, alignments []east.Alignment) {
+func (r *Renderer) writeAlignmentRow(colWidths []int, alignments []east.Alignment, compact bool) {
 	r.rc.w.WriteBytes([]byte("|"))
 	for i, width := range colWidths {
 		align := east.AlignNone
@@ -1144,9 +1247,14 @@ func (r *Renderer) writeAlignmentRow(colWidths []int, alignments []east.Alignmen
 		if align == east.AlignCenter || align == east.AlignRight {
 			last = ':'
 		}
-		r.rc.w.WriteBytes([]byte{' ', first})
-		r.rc.w.WriteBytes(bytes.Repeat([]byte("-"), width-2))
-		r.rc.w.WriteBytes([]byte{last, ' ', '|'})
+		if compact {
+			// Minimum width: 3 characters (e.g., "---", ":--", ":-:", "--:")
+			r.rc.w.WriteBytes([]byte{' ', first, '-', last, ' ', '|'})
+		} else {
+			r.rc.w.WriteBytes([]byte{' ', first})
+			r.rc.w.WriteBytes(bytes.Repeat([]byte("-"), width-2))
+			r.rc.w.WriteBytes([]byte{last, ' ', '|'})
+		}
 	}
 	r.rc.w.EndLine()
 }

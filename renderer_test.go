@@ -1425,3 +1425,154 @@ func TestIdempotent(t *testing.T) {
 		t.Errorf("not idempotent:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
 }
+
+// --- proseWrap: "never" tests ---
+
+func TestProseWrapNever(t *testing.T) {
+	md := newTestMarkdown(prettier.WithProseWrap(prettier.ProseWrapNever))
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "join_soft_line_breaks",
+			input: "hello\nworld",
+			want:  "hello world\n",
+		},
+		{
+			name:  "multiple_lines",
+			input: "one\ntwo\nthree",
+			want:  "one two three\n",
+		},
+		{
+			name:  "preserve_hard_line_break",
+			input: "hello\\\nworld",
+			want:  "hello\\\nworld\n",
+		},
+		{
+			name:  "preserve_blank_line_between_paragraphs",
+			input: "first paragraph\nwith wrap\n\nsecond paragraph",
+			want:  "first paragraph with wrap\n\nsecond paragraph\n",
+		},
+		{
+			name:  "in_emphasis",
+			input: "_hello\nworld_",
+			want:  "_hello world_\n",
+		},
+		{
+			name:  "in_blockquote",
+			input: "> hello\n> world",
+			want:  "> hello world\n",
+		},
+		{
+			name:  "in_list_item",
+			input: "- hello\n  world",
+			want:  "- hello world\n",
+		},
+		{
+			name:  "preserve_mode_keeps_line_breaks",
+			input: "hello\nworld",
+			want:  "hello\nworld\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mdToUse goldmark.Markdown
+			if tt.name == "preserve_mode_keeps_line_breaks" {
+				mdToUse = newTestMarkdown() // default: preserve
+			} else {
+				mdToUse = md
+			}
+			got := render(t, mdToUse, tt.input)
+			if got != tt.want {
+				t.Errorf("render(%q) =\n%q\nwant:\n%q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProseWrapNeverCJK(t *testing.T) {
+	md := newTestMarkdown(prettier.WithProseWrap(prettier.ProseWrapNever))
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "cj_to_cj_no_space",
+			input: "你好\n世界",
+			want:  "你好世界\n",
+		},
+		{
+			name:  "latin_to_latin_space",
+			input: "hello\nworld",
+			want:  "hello world\n",
+		},
+		{
+			name:  "cj_to_latin_space",
+			input: "你好\nhello",
+			want:  "你好 hello\n",
+		},
+		{
+			name:  "latin_to_cj_space",
+			input: "hello\n你好",
+			want:  "hello 你好\n",
+		},
+		{
+			name:  "korean_to_korean_space",
+			input: "안녕\n하세요",
+			want:  "안녕 하세요\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("render(%q) =\n%q\nwant:\n%q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProseWrapNeverCompactTable(t *testing.T) {
+	// With a narrow printWidth, tables that exceed it use compact mode.
+	md := newTestMarkdownGFM(
+		prettier.WithProseWrap(prettier.ProseWrapNever),
+		prettier.WithPrintWidth(30),
+	)
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "wide_table_goes_compact",
+			input: "| Header One | Header Two | Header Three |\n| --- | --- | --- |\n| a | b | c |",
+			want:  "| Header One | Header Two | Header Three |\n| --- | --- | --- |\n| a | b | c |\n",
+		},
+		{
+			name:  "narrow_table_stays_aligned",
+			input: "| A | B |\n| --- | --- |\n| 1 | 2 |",
+			want:  "| A   | B   |\n| --- | --- |\n| 1   | 2   |\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("render() =\n%q\nwant:\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProseWrapNeverIdempotent(t *testing.T) {
+	md := newTestMarkdown(prettier.WithProseWrap(prettier.ProseWrapNever))
+	input := "This is a long\nparagraph that\nspans multiple lines.\n\n- list\n  item\n\n> blockquote\n> text"
+	first := render(t, md, input)
+	second := render(t, md, first)
+	if first != second {
+		t.Errorf("not idempotent:\nfirst:  %q\nsecond: %q", first, second)
+	}
+}
