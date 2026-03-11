@@ -71,6 +71,11 @@ func (r *Renderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
 	reg.Register(east.KindFootnote, r.renderFootnote)
 	reg.Register(east.KindFootnoteLink, r.renderFootnoteLink)
 	reg.Register(east.KindFootnoteBacklink, r.renderFootnoteBacklink)
+
+	// Definition list extension nodes
+	reg.Register(east.KindDefinitionList, r.renderDefinitionList)
+	reg.Register(east.KindDefinitionTerm, r.renderDefinitionTerm)
+	reg.Register(east.KindDefinitionDescription, r.renderDefinitionDescription)
 }
 
 // renderContext carries mutable state during a single Render call.
@@ -1551,6 +1556,50 @@ func (r *Renderer) renderFootnoteLink(w util.BufWriter, source []byte, node ast.
 func (r *Renderer) renderFootnoteBacklink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	// Backlinks are HTML-only artifacts — skip entirely.
 	return ast.WalkSkipChildren, nil
+}
+
+// --- Definition list extension node renderers ---
+
+func (r *Renderer) renderDefinitionList(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
+	if entering {
+		r.writeBlockSeparator(node)
+	} else {
+		r.rc.w.FlushLine()
+	}
+	return ast.WalkContinue, nil
+}
+
+func (r *Renderer) renderDefinitionTerm(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		// Blank line before a term when preceded by a description (visual grouping).
+		if prev := node.PreviousSibling(); prev != nil && prev.Kind() == east.KindDefinitionDescription {
+			r.rc.w.EndLine()
+		}
+	} else {
+		r.rc.w.FlushLine()
+	}
+	return ast.WalkContinue, nil
+}
+
+func (r *Renderer) renderDefinitionDescription(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		// Loose definitions have a blank line between term and description.
+		dd := node.(*east.DefinitionDescription)
+		if !dd.IsTight && node.HasBlankPreviousLines() {
+			r.rc.w.EndLine()
+		}
+		// ":   " on the first line, "    " continuation on subsequent lines.
+		r.rc.w.PushPrefix([]byte(":   "), 0, 0)
+		r.rc.w.PushPrefix([]byte("    "), 1)
+	} else {
+		r.rc.w.PopPrefix()
+		r.rc.w.PopPrefix()
+		r.rc.w.FlushLine()
+	}
+	return ast.WalkContinue, nil
 }
 
 // --- Fill-wrap for proseWrap "always" ---
