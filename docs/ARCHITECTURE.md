@@ -253,6 +253,6 @@ goldmark-prettier-markdown/
 
 - [x] `proseWrap: "always"` — fill-wrap algorithm with sentinel-marked breakable spaces, CJK-aware break point detection, prefix-aware print width targeting, syntax safety guards for block-level markers
 - [x] `proseWrap: "never"` — soft line breaks → space (CJK-aware), compact table mode when exceeding print width
-- [ ] Footnote support
+- [x] Footnote support (`FootnoteList`, `Footnote`, `FootnoteLink`, `FootnoteBacklink`) — inline vs block form based on child count, paragraph line count, and proseWrap mode
 - [ ] Definition list support
 - [ ] Wiki link support

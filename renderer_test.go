@@ -26,6 +26,31 @@ func newTestMarkdown(opts ...prettier.Option) goldmark.Markdown {
 	)
 }
 
+func newTestMarkdownFootnote(opts ...prettier.Option) goldmark.Markdown {
+	r := prettier.NewRenderer(opts...)
+	md := goldmark.New(
+		goldmark.WithRenderer(
+			renderer.NewRenderer(
+				renderer.WithNodeRenderers(
+					util.Prioritized(r, 1000),
+				),
+			),
+		),
+	)
+	md.Parser().AddOptions(
+		parser.WithBlockParsers(
+			util.Prioritized(extension.NewFootnoteBlockParser(), 999),
+		),
+		parser.WithInlineParsers(
+			util.Prioritized(extension.NewFootnoteParser(), 101),
+		),
+		parser.WithASTTransformers(
+			util.Prioritized(extension.NewFootnoteASTTransformer(), 999),
+		),
+	)
+	return md
+}
+
 func newTestMarkdownGFM(opts ...prettier.Option) goldmark.Markdown {
 	r := prettier.NewRenderer(opts...)
 	md := goldmark.New(
@@ -1750,5 +1775,190 @@ func TestProseWrapAlwaysIdempotent(t *testing.T) {
 	second := render(t, md, first)
 	if first != second {
 		t.Errorf("not idempotent:\nfirst:  %q\nsecond: %q", first, second)
+	}
+}
+
+func TestFootnoteSimple(t *testing.T) {
+	md := newTestMarkdownFootnote()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "reference in text",
+			input: "See here[^1].\n\n[^1]: A footnote.\n",
+			want:  "See here[^1].\n\n[^1]: A footnote.\n",
+		},
+		{
+			name:  "multiple footnotes",
+			input: "A[^a] B[^b]\n\n[^a]: First\n\n[^b]: Second\n",
+			want:  "A[^a] B[^b]\n\n[^a]: First\n\n[^b]: Second\n",
+		},
+		{
+			name:  "inline definition",
+			input: "Text[^hello].\n\n[^hello]: world\n",
+			want:  "Text[^hello].\n\n[^hello]: world\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFootnoteBlock(t *testing.T) {
+	md := newTestMarkdownFootnote()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "multi-line paragraph becomes block",
+			input: "Text[^a].\n\n[^a]: line one\n    line two\n",
+			want:  "Text[^a].\n\n[^a]:\n    line one\n    line two\n",
+		},
+		{
+			name:  "multi-child footnote",
+			input: "Text[^fn].\n\n[^fn]: First paragraph.\n\n    Second paragraph.\n",
+			want:  "Text[^fn].\n\n[^fn]: First paragraph.\n\n    Second paragraph.\n",
+		},
+		{
+			name:  "footnote with code block",
+			input: "Text[^fn].\n\n[^fn]: Here is a footnote which includes code.\n\n    ```rs\n    fn main() {\n        println!(\"hello\");\n    }\n    ```\n",
+			want:  "Text[^fn].\n\n[^fn]: Here is a footnote which includes code.\n\n    ```rs\n    fn main() {\n        println!(\"hello\");\n    }\n    ```\n",
+		},
+		{
+			name:  "footnote with blockquote",
+			input: "Text[^fn].\n\n[^fn]:\n\n    > quoted text\n",
+			want:  "Text[^fn].\n\n[^fn]:\n    > quoted text\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFootnoteProseWrapNever(t *testing.T) {
+	md := newTestMarkdownFootnote(prettier.WithProseWrap(prettier.ProseWrapNever))
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "single paragraph always inline",
+			input: "Text[^hello].\n\n[^hello]: this is a long long long long long long long long long long long long long paragraph.\n",
+			want:  "Text[^hello].\n\n[^hello]: this is a long long long long long long long long long long long long long paragraph.\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFootnoteProseWrapAlways(t *testing.T) {
+	md := newTestMarkdownFootnote(
+		prettier.WithProseWrap(prettier.ProseWrapAlways),
+		prettier.WithPrintWidth(80),
+	)
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "short footnote stays inline",
+			input: "Text[^hello].\n\n[^hello]: world\n",
+			want:  "Text[^hello].\n\n[^hello]: world\n",
+		},
+		{
+			name:  "long footnote becomes block",
+			input: "Text[^hello].\n\n[^hello]: this is a long long long long long long long long long long long long long paragraph.\n",
+			want:  "Text[^hello].\n\n[^hello]:\n    this is a long long long long long long long long long long long long long\n    paragraph.\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFootnoteIdempotent(t *testing.T) {
+	md := newTestMarkdownFootnote()
+	inputs := []string{
+		"Text[^hello].\n\n[^hello]: world\n",
+		"See here[^1].\n\n[^1]: A footnote.\n",
+		"Text[^fn].\n\n[^fn]: First paragraph.\n\n    Second paragraph.\n",
+		"Text[^a].\n\n[^a]: line one\n    line two\n",
+		"Text[^fn].\n\n[^fn]: Here is a footnote which includes code.\n\n    ```rs\n    fn main() {\n        println!(\"hello\");\n    }\n    ```\n",
+	}
+	for _, input := range inputs {
+		first := render(t, md, input)
+		second := render(t, md, first)
+		if first != second {
+			t.Errorf("not idempotent for input %q:\nfirst:  %q\nsecond: %q", input, first, second)
+		}
+	}
+}
+
+func TestFootnoteSiblings(t *testing.T) {
+	md := newTestMarkdownFootnote()
+	// Multiple footnote definitions get blank lines between them.
+	input := "A[^a] B[^b] C[^c]\n\n[^a]: alpha\n\n[^b]: beta\n\n[^c]: gamma\n"
+	want := "A[^a] B[^b] C[^c]\n\n[^a]: alpha\n\n[^b]: beta\n\n[^c]: gamma\n"
+	got := render(t, md, input)
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestFootnotePreserveMultiLineParagraph(t *testing.T) {
+	md := newTestMarkdownFootnote()
+	// Matches prettier's long.md preserve output: multi-line paragraph in source
+	// becomes block form even if flat text would fit.
+	input := "Text[^world].\n\n[^world]: this is a long long long long long paragraph.\n          this is a second long long line.\n"
+	want := "Text[^world].\n\n[^world]:\n    this is a long long long long long paragraph.\n    this is a second long long line.\n"
+	got := render(t, md, input)
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestFootnoteProseWrapAlwaysIdempotent(t *testing.T) {
+	md := newTestMarkdownFootnote(
+		prettier.WithProseWrap(prettier.ProseWrapAlways),
+		prettier.WithPrintWidth(80),
+	)
+	inputs := []string{
+		"Text[^hello].\n\n[^hello]: world\n",
+		"Text[^hello].\n\n[^hello]: this is a long long long long long long long long long long long long long paragraph.\n",
+		"Text[^fn].\n\n[^fn]: Here is a footnote which includes code.\n\n    ```rs\n    fn main() {}\n    ```\n",
+	}
+	for _, input := range inputs {
+		first := render(t, md, input)
+		second := render(t, md, first)
+		if first != second {
+			t.Errorf("not idempotent for input %q:\nfirst:  %q\nsecond: %q", input, first, second)
+		}
 	}
 }

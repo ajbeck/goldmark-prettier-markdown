@@ -65,6 +65,12 @@ func (r *Renderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
 	reg.Register(east.KindTableCell, r.renderTableCell)
 	reg.Register(east.KindStrikethrough, r.renderStrikethrough)
 	reg.Register(east.KindTaskCheckBox, r.renderTaskCheckBox)
+
+	// Footnote extension nodes
+	reg.Register(east.KindFootnoteList, r.renderFootnoteList)
+	reg.Register(east.KindFootnote, r.renderFootnote)
+	reg.Register(east.KindFootnoteLink, r.renderFootnoteLink)
+	reg.Register(east.KindFootnoteBacklink, r.renderFootnoteBacklink)
 }
 
 // renderContext carries mutable state during a single Render call.
@@ -89,6 +95,10 @@ type renderContext struct {
 	// singleLineDepth tracks nesting in non-breakable contexts (links).
 	// When > 0, spaces are not marked as breakable during fill-wrap.
 	singleLineDepth int
+
+	// footnoteRefs maps footnote Index to the ref label (e.g., 0 → "hello").
+	// Built by scanning FootnoteList children on document enter.
+	footnoteRefs map[int][]byte
 }
 
 // ignoreRange represents a <!-- prettier-ignore-start --> / <!-- prettier-ignore-end --> pair.
@@ -120,6 +130,7 @@ func (r *Renderer) renderDocument(w util.BufWriter, source []byte, node ast.Node
 	if entering {
 		r.rc = newRenderContext(w, source, &r.config)
 		r.scanIgnoreRanges(node)
+		r.scanFootnoteRefs(node)
 	} else {
 		// Trailing newline at end of document.
 		r.rc.w.FlushLine()
@@ -1366,6 +1377,182 @@ func (r *Renderer) renderTaskCheckBox(w util.BufWriter, source []byte, node ast.
 	return ast.WalkContinue, nil
 }
 
+// --- Footnote extension node renderers ---
+
+// scanFootnoteRefs builds the footnoteRefs map from the FootnoteList at the
+// end of the document. This lets renderFootnoteLink look up ref labels by index.
+func (r *Renderer) scanFootnoteRefs(doc ast.Node) {
+	for c := doc.FirstChild(); c != nil; c = c.NextSibling() {
+		if c.Kind() != east.KindFootnoteList {
+			continue
+		}
+		r.rc.footnoteRefs = make(map[int][]byte)
+		for fn := c.FirstChild(); fn != nil; fn = fn.NextSibling() {
+			if f, ok := fn.(*east.Footnote); ok {
+				r.rc.footnoteRefs[f.Index] = f.Ref
+			}
+		}
+	}
+}
+
+func (r *Renderer) renderFootnoteList(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		r.writeBlockSeparator(node)
+	}
+	return ast.WalkContinue, nil
+}
+
+func (r *Renderer) renderFootnote(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	fn := node.(*east.Footnote)
+	if entering {
+		r.writeBlockSeparator(node)
+		ref := fn.Ref
+		r.rc.w.WriteBytes([]byte("[^"))
+		r.rc.w.WriteBytes(ref)
+		r.rc.w.WriteBytes([]byte("]"))
+
+		if r.shouldInlineFootnote(fn) {
+			// Inline form: [^ref]: content (always fits, no block fallback).
+			r.rc.w.WriteBytes([]byte(": "))
+		} else if r.canInlineFirstChild(fn) {
+			// First child fits inline: [^ref]: first_child
+			// Continuation lines get 4-space indent.
+			r.rc.w.WriteBytes([]byte(": "))
+			r.rc.w.PushPrefix([]byte("    "), 1)
+		} else {
+			// Block form: [^ref]:\n    content
+			r.rc.w.WriteBytes([]byte(":"))
+			r.rc.w.EndLine()
+			r.rc.w.PushPrefix([]byte("    "))
+		}
+	} else {
+		if !r.shouldInlineFootnote(fn) {
+			r.rc.w.PopPrefix()
+		}
+		r.rc.w.FlushLine()
+	}
+	return ast.WalkContinue, nil
+}
+
+// shouldInlineFootnote returns true when the footnote should always be rendered
+// inline (no width check, no block fallback). Matches prettier's logic.
+func (r *Renderer) shouldInlineFootnote(fn *east.Footnote) bool {
+	if fn.ChildCount() != 1 {
+		return false
+	}
+	first := fn.FirstChild()
+	if first.Kind() != ast.KindParagraph {
+		return false
+	}
+	switch r.rc.config.ProseWrap {
+	case ProseWrapNever:
+		return true
+	case ProseWrapPreserve:
+		return isSingleLineParagraph(first, r.rc.source)
+	default:
+		return false
+	}
+}
+
+// isSingleLineParagraph reports whether a paragraph's source text spans a single line.
+func isSingleLineParagraph(para ast.Node, source []byte) bool {
+	lines := para.Lines()
+	if lines.Len() <= 1 {
+		return true
+	}
+	// Multi-line in source means multi-line paragraph.
+	return false
+}
+
+// canInlineFirstChild checks if the first child (a paragraph) of a non-inline
+// footnote can be rendered on the same line as [^ref]: . This implements
+// prettier's group([softline, first_child]) behavior.
+func (r *Renderer) canInlineFirstChild(fn *east.Footnote) bool {
+	first := fn.FirstChild()
+	if first == nil || first.Kind() != ast.KindParagraph {
+		return false
+	}
+	// In preserve mode, multi-line paragraphs can't be inlined because
+	// we'd need to preserve the line breaks.
+	if r.rc.config.ProseWrap == ProseWrapPreserve && !isSingleLineParagraph(first, r.rc.source) {
+		return false
+	}
+	if r.rc.config.PrintWidth <= 0 {
+		return true // unlimited width
+	}
+	prefixLen := len("[^") + len(fn.Ref) + len("]: ")
+	contentWidth := r.estimateParagraphFlatWidth(first)
+	return prefixLen+contentWidth <= r.rc.config.PrintWidth
+}
+
+// estimateParagraphFlatWidth estimates the display width of a paragraph if
+// rendered on a single line (all soft breaks → spaces).
+func (r *Renderer) estimateParagraphFlatWidth(para ast.Node) int {
+	width := 0
+	for c := para.FirstChild(); c != nil; c = c.NextSibling() {
+		switch n := c.(type) {
+		case *ast.Text:
+			width += displayWidth(string(n.Value(r.rc.source)))
+			if n.SoftLineBreak() && c.NextSibling() != nil {
+				width++ // space replacing soft break
+			}
+		case *ast.String:
+			width += displayWidth(string(n.Value))
+		case *ast.CodeSpan:
+			// Rough estimate: backticks + content
+			width += 2 // opening/closing backticks
+			for cc := n.FirstChild(); cc != nil; cc = cc.NextSibling() {
+				if t, ok := cc.(*ast.Text); ok {
+					width += len(t.Value(r.rc.source))
+				}
+			}
+		case *ast.Emphasis:
+			if n.Level == 2 {
+				width += 4 // ** on each side
+			} else {
+				width += 2 // _ on each side
+			}
+			// Add child content width recursively (simplified).
+			for cc := n.FirstChild(); cc != nil; cc = cc.NextSibling() {
+				if t, ok := cc.(*ast.Text); ok {
+					width += displayWidth(string(t.Value(r.rc.source)))
+				}
+			}
+		case *ast.Link:
+			width += 4 // []()
+			width += len(n.Destination)
+			for cc := n.FirstChild(); cc != nil; cc = cc.NextSibling() {
+				if t, ok := cc.(*ast.Text); ok {
+					width += displayWidth(string(t.Value(r.rc.source)))
+				}
+			}
+		case *east.FootnoteBacklink:
+			// Skip backlinks entirely — they don't contribute to output.
+		default:
+			// Conservative fallback for unknown inline types.
+			width += 10
+		}
+	}
+	return width
+}
+
+func (r *Renderer) renderFootnoteLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if !entering {
+		return ast.WalkContinue, nil
+	}
+	fn := node.(*east.FootnoteLink)
+	ref := r.rc.footnoteRefs[fn.Index]
+	r.rc.w.WriteBytes([]byte("[^"))
+	r.rc.w.WriteBytes(ref)
+	r.rc.w.WriteBytes([]byte("]"))
+	return ast.WalkContinue, nil
+}
+
+func (r *Renderer) renderFootnoteBacklink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	// Backlinks are HTML-only artifacts — skip entirely.
+	return ast.WalkSkipChildren, nil
+}
+
 // --- Fill-wrap for proseWrap "always" ---
 
 // fillWrapSentinel is a zero byte used to mark breakable space positions
@@ -1683,10 +1870,15 @@ func (r *Renderer) writeBlockSeparator(node ast.Node) {
 		return
 	}
 
-	// Block elements in Document or Blockquote always get blank line separation.
+	// Block elements in Document, Blockquote, FootnoteList, or Footnote
+	// always get blank line separation.
 	switch parent.Kind() {
 	case ast.KindDocument, ast.KindBlockquote:
 		r.rc.w.EndLine()
+	default:
+		if parent.Kind() == east.KindFootnoteList || parent.Kind() == east.KindFootnote {
+			r.rc.w.EndLine()
+		}
 	}
 }
 
