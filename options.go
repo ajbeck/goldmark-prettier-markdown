@@ -10,7 +10,9 @@ const (
 	ProseWrapPreserve ProseWrap = iota
 	// ProseWrapAlways wraps prose to printWidth. Not yet implemented.
 	ProseWrapAlways
-	// ProseWrapNever collapses prose to single lines. Not yet implemented.
+	// ProseWrapNever collapses prose to single lines. Soft line breaks become
+	// spaces (or empty for CJ-to-CJ transitions). Tables use compact mode
+	// when the aligned version exceeds printWidth.
 	ProseWrapNever
 )
 
@@ -19,6 +21,7 @@ type Config struct {
 	ProseWrap   ProseWrap
 	SingleQuote bool
 	TabWidth    int
+	PrintWidth  int
 }
 
 // DefaultConfig returns a Config with prettier's default values.
@@ -27,6 +30,7 @@ func DefaultConfig() Config {
 		ProseWrap:   ProseWrapPreserve,
 		SingleQuote: false,
 		TabWidth:    2,
+		PrintWidth:  80,
 	}
 }
 
@@ -55,6 +59,13 @@ func (o withTabWidth) SetPrettierOption(c *Config) { c.TabWidth = o.value }
 
 // WithTabWidth sets the tab width used for list alignment.
 func WithTabWidth(v int) Option { return withTabWidth{v} }
+
+type withPrintWidth struct{ value int }
+
+func (o withPrintWidth) SetPrettierOption(c *Config) { c.PrintWidth = o.value }
+
+// WithPrintWidth sets the target line width for prose wrapping and compact tables.
+func WithPrintWidth(v int) Option { return withPrintWidth{v} }
 
 // optionName is the renderer.OptionName for prettier config options passed
 // through goldmark's renderer.Option interface.

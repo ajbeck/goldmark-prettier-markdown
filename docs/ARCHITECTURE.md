@@ -252,7 +252,7 @@ goldmark-prettier-markdown/
 ### Future Work
 
 - [ ] `proseWrap: "always"` — sentence splitting, fill-mode wrapping, CJK-aware line break conversion, print width targeting
-- [ ] `proseWrap: "never"` — compact table mode, single-line prose
+- [x] `proseWrap: "never"` — soft line breaks → space (CJK-aware), compact table mode when exceeding print width
 - [ ] Footnote support
 - [ ] Definition list support
 - [ ] Wiki link support
