@@ -51,6 +51,26 @@ func newTestMarkdownFootnote(opts ...prettier.Option) goldmark.Markdown {
 	return md
 }
 
+func newTestMarkdownDefList(opts ...prettier.Option) goldmark.Markdown {
+	r := prettier.NewRenderer(opts...)
+	md := goldmark.New(
+		goldmark.WithRenderer(
+			renderer.NewRenderer(
+				renderer.WithNodeRenderers(
+					util.Prioritized(r, 1000),
+				),
+			),
+		),
+	)
+	md.Parser().AddOptions(
+		parser.WithBlockParsers(
+			util.Prioritized(extension.NewDefinitionListParser(), 101),
+			util.Prioritized(extension.NewDefinitionDescriptionParser(), 102),
+		),
+	)
+	return md
+}
+
 func newTestMarkdownGFM(opts ...prettier.Option) goldmark.Markdown {
 	r := prettier.NewRenderer(opts...)
 	md := goldmark.New(
@@ -1953,6 +1973,71 @@ func TestFootnoteProseWrapAlwaysIdempotent(t *testing.T) {
 		"Text[^hello].\n\n[^hello]: world\n",
 		"Text[^hello].\n\n[^hello]: this is a long long long long long long long long long long long long long paragraph.\n",
 		"Text[^fn].\n\n[^fn]: Here is a footnote which includes code.\n\n    ```rs\n    fn main() {}\n    ```\n",
+	}
+	for _, input := range inputs {
+		first := render(t, md, input)
+		second := render(t, md, first)
+		if first != second {
+			t.Errorf("not idempotent for input %q:\nfirst:  %q\nsecond: %q", input, first, second)
+		}
+	}
+}
+
+func TestDefinitionList(t *testing.T) {
+	md := newTestMarkdownDefList()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "simple",
+			input: "Apple\n:   A fruit.\n",
+			want:  "Apple\n:   A fruit.\n",
+		},
+		{
+			name:  "two terms",
+			input: "Apple\n:   A fruit.\n\nOrange\n:   Another fruit.\n",
+			want:  "Apple\n:   A fruit.\n\nOrange\n:   Another fruit.\n",
+		},
+		{
+			name:  "multiple descriptions",
+			input: "Apple\n:   A fruit.\n:   A company.\n",
+			want:  "Apple\n:   A fruit.\n:   A company.\n",
+		},
+		{
+			name:  "multiple terms for one description",
+			input: "Term 1\nTerm 2\n:   Definition.\n",
+			want:  "Term 1\nTerm 2\n:   Definition.\n",
+		},
+		{
+			name:  "loose definitions",
+			input: "Apple\n\n:   A fruit.\n\nOrange\n\n:   Another fruit.\n",
+			want:  "Apple\n\n:   A fruit.\n\nOrange\n\n:   Another fruit.\n",
+		},
+		{
+			name:  "multi-paragraph description",
+			input: "Term\n\n:   First paragraph.\n\n    Second paragraph.\n",
+			want:  "Term\n\n:   First paragraph.\n\n    Second paragraph.\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefinitionListIdempotent(t *testing.T) {
+	md := newTestMarkdownDefList()
+	inputs := []string{
+		"Apple\n:   A fruit.\n",
+		"Apple\n:   A fruit.\n\nOrange\n:   Another fruit.\n",
+		"Apple\n:   A fruit.\n:   A company.\n",
+		"Term\n\n:   First paragraph.\n\n    Second paragraph.\n",
 	}
 	for _, input := range inputs {
 		first := render(t, md, input)
