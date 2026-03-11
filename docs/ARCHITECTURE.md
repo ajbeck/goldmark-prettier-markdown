@@ -251,7 +251,7 @@ goldmark-prettier-markdown/
 
 ### Future Work
 
-- [ ] `proseWrap: "always"` — sentence splitting, fill-mode wrapping, CJK-aware line break conversion, print width targeting
+- [x] `proseWrap: "always"` — fill-wrap algorithm with sentinel-marked breakable spaces, CJK-aware break point detection, prefix-aware print width targeting, syntax safety guards for block-level markers
 - [x] `proseWrap: "never"` — soft line breaks → space (CJK-aware), compact table mode when exceeding print width
 - [ ] Footnote support
 - [ ] Definition list support

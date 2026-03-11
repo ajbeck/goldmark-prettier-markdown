@@ -1576,3 +1576,179 @@ func TestProseWrapNeverIdempotent(t *testing.T) {
 		t.Errorf("not idempotent:\nfirst:  %q\nsecond: %q", first, second)
 	}
 }
+
+func TestProseWrapAlways(t *testing.T) {
+	md := newTestMarkdown(
+		prettier.WithProseWrap(prettier.ProseWrapAlways),
+		prettier.WithPrintWidth(40),
+	)
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "short_paragraph_no_wrap",
+			input: "hello world",
+			want:  "hello world\n",
+		},
+		{
+			name:  "wrap_long_paragraph",
+			input: "one two three four five six seven eight nine ten eleven twelve",
+			want:  "one two three four five six seven eight\nnine ten eleven twelve\n",
+		},
+		{
+			name:  "join_and_rewrap_soft_breaks",
+			input: "one\ntwo\nthree four five six seven eight nine ten eleven twelve",
+			want:  "one two three four five six seven eight\nnine ten eleven twelve\n",
+		},
+		{
+			name:  "preserve_hard_line_break",
+			input: "hello\\\nworld this is a test of wrapping at forty characters",
+			want:  "hello\\\nworld this is a test of wrapping\nat forty characters\n",
+		},
+		{
+			name:  "preserve_paragraphs",
+			input: "first paragraph with many words that go beyond forty columns\n\nsecond paragraph that also has many words beyond forty columns",
+			want:  "first paragraph with many words that go\nbeyond forty columns\n\nsecond paragraph that also has many\nwords beyond forty columns\n",
+		},
+		{
+			name:  "wrap_in_blockquote",
+			input: "> this is a blockquote with many words that should wrap at the print width",
+			want:  "> this is a blockquote with many words\n> that should wrap at the print width\n",
+		},
+		{
+			name:  "wrap_in_list_item",
+			input: "- this is a list item with many words that should wrap at the print width",
+			want:  "- this is a list item with many words\n  that should wrap at the print width\n",
+		},
+		{
+			name:  "no_wrap_in_atx_heading",
+			input: "## this is a heading with many words that exceed the print width limit",
+			want:  "## this is a heading with many words that exceed the print width limit\n",
+		},
+		{
+			name:  "syntax_safety_blockquote",
+			input: "word word word word word word word word > not a blockquote",
+			// ">" joins with preceding "word" via non-breakable space,
+			// keeping ">" off the line start.
+			want: "word word word word word word word\nword > not a blockquote\n",
+		},
+		{
+			name:  "syntax_safety_heading",
+			input: "word word word word word word word word ## not a heading",
+			want:  "word word word word word word word\nword ## not a heading\n",
+		},
+		{
+			name:  "syntax_safety_list_marker",
+			input: "word word word word word word word word - not a list",
+			want:  "word word word word word word word\nword - not a list\n",
+		},
+		{
+			name:  "syntax_safety_ordered_list",
+			input: "word word word word word word word word 1. not a list",
+			want:  "word word word word word word word\nword 1. not a list\n",
+		},
+		{
+			name:  "link_text_not_broken",
+			input: "[this is a very long link text that should not be broken](http://example.com)",
+			want:  "[this is a very long link text that should not be broken](http://example.com)\n",
+		},
+		{
+			name:  "emphasis_preserved",
+			input: "this is _emphasized text_ in a paragraph with many words that wrap",
+			want:  "this is _emphasized text_ in a paragraph\nwith many words that wrap\n",
+		},
+		{
+			name:  "code_span_not_broken",
+			input: "this is `inline code that is quite long` in a paragraph with words",
+			want:  "this is `inline code that is quite long`\nin a paragraph with words\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("input:  %q\ngot:    %q\nwant:   %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProseWrapAlwaysCJK(t *testing.T) {
+	md := newTestMarkdown(
+		prettier.WithProseWrap(prettier.ProseWrapAlways),
+		prettier.WithPrintWidth(20),
+	)
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "cj_no_break",
+			input: "你好世界这是一个测试",
+			want:  "你好世界这是一个测试\n",
+		},
+		{
+			name:  "cj_soft_break_removed",
+			input: "你好世界\n这是测试",
+			want:  "你好世界这是测试\n",
+		},
+		{
+			name:  "korean_breaks_like_latin",
+			input: "한국어 테스트 입니다 여기서 줄바꿈",
+			// Each Korean char is double-width (2).
+			// "한국어 테스트 입니다" = 6+1+6+1+6 = 20 (fits exactly at width 20)
+			want: "한국어 테스트 입니다\n여기서 줄바꿈\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("input:  %q\ngot:    %q\nwant:   %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProseWrapAlwaysSetext(t *testing.T) {
+	md := newTestMarkdown(
+		prettier.WithProseWrap(prettier.ProseWrapAlways),
+		prettier.WithPrintWidth(25),
+	)
+	got := render(t, md, "this is a long setext heading\n===")
+	want := "this is a long setext\nheading\n===\n"
+	if got != want {
+		t.Errorf("got:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestProseWrapAlwaysNestedBlockquote(t *testing.T) {
+	// Prefix "> > " = 4 chars, so available = 30-4 = 26 chars.
+	md := newTestMarkdown(
+		prettier.WithProseWrap(prettier.ProseWrapAlways),
+		prettier.WithPrintWidth(30),
+	)
+	got := render(t, md, "> > this is a deeply nested blockquote with long text that wraps")
+	want := "> > this is a deeply nested\n> > blockquote with long text\n> > that wraps\n"
+	if got != want {
+		t.Errorf("got:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestProseWrapAlwaysIdempotent(t *testing.T) {
+	md := newTestMarkdown(
+		prettier.WithProseWrap(prettier.ProseWrapAlways),
+		prettier.WithPrintWidth(40),
+	)
+	input := "This is a long paragraph that spans multiple lines and should be wrapped at the print width of forty characters.\n\n- list item with text\n\n> blockquote with text"
+	first := render(t, md, input)
+	second := render(t, md, first)
+	if first != second {
+		t.Errorf("not idempotent:\nfirst:  %q\nsecond: %q", first, second)
+	}
+}

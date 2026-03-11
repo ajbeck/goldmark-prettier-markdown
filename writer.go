@@ -64,6 +64,17 @@ func (m *markdownWriter) PushPrefix(prefix []byte, lineRanges ...int) {
 	m.prefixes = append(m.prefixes, lp)
 }
 
+// PrefixWidth returns the total width of all prefixes active on the current line.
+func (m *markdownWriter) PrefixWidth() int {
+	width := 0
+	for _, lp := range m.prefixes {
+		if lp.startLine <= m.line && (lp.endLine == -1 || m.line <= lp.endLine) {
+			width += len(lp.prefix)
+		}
+	}
+	return width
+}
+
 // PopPrefix removes the most recently pushed prefix.
 func (m *markdownWriter) PopPrefix() {
 	m.prefixes = m.prefixes[:len(m.prefixes)-1]
