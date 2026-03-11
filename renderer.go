@@ -74,6 +74,20 @@ type renderContext struct {
 
 	// listStack tracks nested list state for marker alternation and numbering.
 	listStack []listContext
+
+	// ignoreRanges holds prettier-ignore-start/end pairs found during document scan.
+	ignoreRanges []ignoreRange
+	// ignoredNodes is the set of nodes inside ignore ranges (plus end comments)
+	// that should be skipped entirely during rendering.
+	ignoredNodes map[ast.Node]struct{}
+}
+
+// ignoreRange represents a <!-- prettier-ignore-start --> / <!-- prettier-ignore-end --> pair.
+type ignoreRange struct {
+	startNode    ast.Node // the start HTML comment
+	endNode      ast.Node // the end HTML comment
+	betweenStart int      // byte offset in source after start comment
+	betweenEnd   int      // byte offset in source at start of end comment
 }
 
 type listContext struct {
@@ -96,6 +110,7 @@ func newRenderContext(w io.Writer, source []byte, config *Config) *renderContext
 func (r *Renderer) renderDocument(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if entering {
 		r.rc = newRenderContext(w, source, &r.config)
+		r.scanIgnoreRanges(node)
 	} else {
 		// Trailing newline at end of document.
 		r.rc.w.FlushLine()
@@ -103,7 +118,74 @@ func (r *Renderer) renderDocument(w util.BufWriter, source []byte, node ast.Node
 	return ast.WalkContinue, nil
 }
 
+// scanIgnoreRanges scans direct children of the document for
+// prettier-ignore-start/end pairs and populates the render context.
+func (r *Renderer) scanIgnoreRanges(doc ast.Node) {
+	var startNode ast.Node
+	var startEnd int // byte offset at end of start comment
+
+	for child := doc.FirstChild(); child != nil; child = child.NextSibling() {
+		kind := prettierIgnoreKind(child, r.rc.source)
+		switch kind {
+		case "start":
+			if startNode == nil {
+				startNode = child
+				startEnd = htmlBlockEndOffset(child)
+			}
+		case "end":
+			if startNode != nil {
+				endStart := htmlBlockStartOffset(child)
+				ir := ignoreRange{
+					startNode:    startNode,
+					endNode:      child,
+					betweenStart: startEnd,
+					betweenEnd:   endStart,
+				}
+				r.rc.ignoreRanges = append(r.rc.ignoreRanges, ir)
+
+				// Mark all nodes between start and end (plus the end node)
+				// so they are skipped during rendering.
+				if r.rc.ignoredNodes == nil {
+					r.rc.ignoredNodes = make(map[ast.Node]struct{})
+				}
+				for n := startNode.NextSibling(); n != nil; n = n.NextSibling() {
+					r.rc.ignoredNodes[n] = struct{}{}
+					if n == child {
+						break
+					}
+				}
+				startNode = nil
+			}
+		}
+	}
+}
+
+// htmlBlockStartOffset returns the byte offset of the first character of an HTML block.
+func htmlBlockStartOffset(node ast.Node) int {
+	lines := node.Lines()
+	if lines.Len() == 0 {
+		return 0
+	}
+	return lines.At(0).Start
+}
+
+// htmlBlockEndOffset returns the byte offset after the last character of an HTML block,
+// including the closure line if present.
+func htmlBlockEndOffset(node ast.Node) int {
+	if hb, ok := node.(*ast.HTMLBlock); ok && hb.HasClosure() {
+		return hb.ClosureLine.Stop
+	}
+	lines := node.Lines()
+	if lines.Len() == 0 {
+		return 0
+	}
+	return lines.At(lines.Len() - 1).Stop
+}
+
 func (r *Renderer) renderParagraph(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	if entering {
 		r.writeBlockSeparator(node)
 	} else {
@@ -113,6 +195,9 @@ func (r *Renderer) renderParagraph(w util.BufWriter, source []byte, node ast.Nod
 }
 
 func (r *Renderer) renderHeading(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	n := node.(*ast.Heading)
 	if entering {
 		r.writeBlockSeparator(node)
@@ -202,6 +287,9 @@ func (r *Renderer) renderSetextHeadingExit(n *ast.Heading) {
 }
 
 func (r *Renderer) renderBlockquote(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	if entering {
 		r.writeBlockSeparator(node)
 		r.rc.w.PushPrefix([]byte("> "))
@@ -213,8 +301,16 @@ func (r *Renderer) renderBlockquote(w util.BufWriter, source []byte, node ast.No
 }
 
 func (r *Renderer) renderCodeBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	if entering {
 		r.writeBlockSeparator(node)
+		// Extra blank line when indented code follows a list (prettier: shouldPrePrintTripleHardline).
+		// Without this, CommonMark parsers treat the indented content as list continuation.
+		if prev := node.PreviousSibling(); prev != nil && prev.Kind() == ast.KindList {
+			r.rc.w.EndLine()
+		}
 		r.rc.w.PushPrefix([]byte("    "))
 		r.renderLines(node)
 	} else {
@@ -225,6 +321,9 @@ func (r *Renderer) renderCodeBlock(w util.BufWriter, source []byte, node ast.Nod
 }
 
 func (r *Renderer) renderFencedCodeBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	n := node.(*ast.FencedCodeBlock)
 	if entering {
 		r.writeBlockSeparator(node)
@@ -256,6 +355,9 @@ func (r *Renderer) renderFencedCodeBlock(w util.BufWriter, source []byte, node a
 }
 
 func (r *Renderer) renderHTMLBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	n := node.(*ast.HTMLBlock)
 	if entering {
 		r.writeBlockSeparator(node)
@@ -272,6 +374,9 @@ func (r *Renderer) renderHTMLBlock(w util.BufWriter, source []byte, node ast.Nod
 }
 
 func (r *Renderer) renderList(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	n := node.(*ast.List)
 	if entering {
 		r.writeBlockSeparator(node)
@@ -329,6 +434,11 @@ func (r *Renderer) renderListItem(w util.BufWriter, source []byte, node ast.Node
 		// Continuation lines get space padding matching the prefix length.
 		r.rc.w.PushPrefix(bytes.Repeat([]byte{' '}, len(prefix)), 1)
 	} else {
+		// Empty list items have no children to generate content, so the
+		// marker prefix is never flushed. Force a newline to emit it.
+		if node.FirstChild() == nil {
+			r.rc.w.EndLine()
+		}
 		r.rc.w.PopPrefix()
 		r.rc.w.PopPrefix()
 		r.rc.w.FlushLine()
@@ -337,6 +447,9 @@ func (r *Renderer) renderListItem(w util.BufWriter, source []byte, node ast.Node
 }
 
 func (r *Renderer) renderTextBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	if entering {
 		r.writeBlockSeparator(node)
 	} else {
@@ -346,6 +459,9 @@ func (r *Renderer) renderTextBlock(w util.BufWriter, source []byte, node ast.Nod
 }
 
 func (r *Renderer) renderThematicBreak(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	if entering {
 		r.writeBlockSeparator(node)
 		// Default to "---". In list context, alternate "***" / "---".
@@ -836,6 +952,9 @@ func (r *Renderer) renderRawHTML(w util.BufWriter, source []byte, node ast.Node,
 // --- GFM extension node renderers ---
 
 func (r *Renderer) renderTable(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
 	if !entering {
 		return ast.WalkContinue, nil
 	}
@@ -1067,6 +1186,46 @@ func (r *Renderer) renderTaskCheckBox(w util.BufWriter, source []byte, node ast.
 
 // --- Helpers ---
 
+// handleIgnoredNode checks whether a block node falls within a
+// prettier-ignore-start/end range. If it is the start comment, the entire
+// range is rendered verbatim from source. If it is any other node in the
+// range, it is skipped. Returns true if the node was handled.
+func (r *Renderer) handleIgnoredNode(node ast.Node, entering bool) (ast.WalkStatus, bool) {
+	if len(r.rc.ignoreRanges) == 0 {
+		return 0, false
+	}
+
+	// Check if this node starts an ignore range.
+	if entering {
+		for _, ir := range r.rc.ignoreRanges {
+			if node == ir.startNode {
+				r.writeBlockSeparator(node)
+				// Write start comment verbatim from source.
+				r.renderLines(node)
+				if hb, ok := node.(*ast.HTMLBlock); ok && hb.HasClosure() {
+					r.rc.w.WriteBytes(hb.ClosureLine.Value(r.rc.source))
+				}
+				// Write raw source between start and end comments.
+				r.rc.w.WriteBytes(r.rc.source[ir.betweenStart:ir.betweenEnd])
+				// Write end comment verbatim from source.
+				r.renderLines(ir.endNode)
+				if hb, ok := ir.endNode.(*ast.HTMLBlock); ok && hb.HasClosure() {
+					r.rc.w.WriteBytes(hb.ClosureLine.Value(r.rc.source))
+				}
+				r.rc.w.FlushLine()
+				return ast.WalkSkipChildren, true
+			}
+		}
+	}
+
+	// Check if this node is inside an ignore range (or is the end comment).
+	if _, ignored := r.rc.ignoredNodes[node]; ignored {
+		return ast.WalkSkipChildren, true
+	}
+
+	return 0, false
+}
+
 // writeBlockSeparator writes a blank line before a block element when needed.
 // This implements prettier's block spacing rules from children.js.
 func (r *Renderer) writeBlockSeparator(node ast.Node) {
@@ -1117,23 +1276,38 @@ func (r *Renderer) writeBlockSeparator(node ast.Node) {
 	}
 }
 
-// isPrettierIgnoreComment returns true if the node is an HTML block containing
-// exactly "<!-- prettier-ignore -->".
-func isPrettierIgnoreComment(node ast.Node, source []byte) bool {
+// prettierIgnoreKind returns the kind of prettier-ignore directive for an HTML
+// block: "next" for <!-- prettier-ignore -->, "start" for
+// <!-- prettier-ignore-start -->, "end" for <!-- prettier-ignore-end -->,
+// or "" if none.
+func prettierIgnoreKind(node ast.Node, source []byte) string {
 	if node.Kind() != ast.KindHTMLBlock {
-		return false
+		return ""
 	}
 	lines := node.Lines()
 	if lines.Len() == 0 {
-		return false
+		return ""
 	}
 	var text []byte
 	for i := range lines.Len() {
 		seg := lines.At(i)
 		text = append(text, seg.Value(source)...)
 	}
-	trimmed := bytes.TrimSpace(text)
-	return string(trimmed) == "<!-- prettier-ignore -->"
+	trimmed := string(bytes.TrimSpace(text))
+	switch trimmed {
+	case "<!-- prettier-ignore -->":
+		return "next"
+	case "<!-- prettier-ignore-start -->":
+		return "start"
+	case "<!-- prettier-ignore-end -->":
+		return "end"
+	}
+	return ""
+}
+
+// isPrettierIgnoreComment returns true if the node is a <!-- prettier-ignore --> comment.
+func isPrettierIgnoreComment(node ast.Node, source []byte) bool {
+	return prettierIgnoreKind(node, source) == "next"
 }
 
 // writeURL writes a link/image URL. If the URL contains spaces or characters
