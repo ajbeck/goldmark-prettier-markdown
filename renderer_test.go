@@ -579,6 +579,36 @@ func TestIndentedCodeBlock(t *testing.T) {
 	}
 }
 
+func TestIndentedCodeBlockAfterList(t *testing.T) {
+	md := newTestMarkdown()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			// Empty list item followed by indented code: goldmark parses
+			// the CodeBlock as a sibling of the List, not inside it.
+			name:  "empty_list_item_then_code",
+			input: "-\n\n    code",
+			want:  "-\n\n\n    code\n",
+		},
+		{
+			name:  "fenced_code_after_list_no_extra_blank",
+			input: "- item\n\n```\ncode\n```",
+			want:  "- item\n\n```\ncode\n```\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("render(%q) =\n%s\nwant:\n%s", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHTMLBlock(t *testing.T) {
 	md := newTestMarkdown()
 	input := "<div>\nhello\n</div>"
@@ -1005,6 +1035,69 @@ func TestPrettierIgnorePreservesContent(t *testing.T) {
 	got := render(t, md, input)
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestPrettierIgnoreStartEnd(t *testing.T) {
+	md := newTestMarkdown()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "basic_range",
+			input: "before\n\n<!-- prettier-ignore-start -->\n\n**ugly**   text\n\n<!-- prettier-ignore-end -->\n\nafter",
+			want:  "before\n\n<!-- prettier-ignore-start -->\n\n**ugly**   text\n\n<!-- prettier-ignore-end -->\n\nafter\n",
+		},
+		{
+			name: "range_no_blank_lines_between",
+			input: "before\n\n<!-- prettier-ignore-start -->\n**ugly**   text\n<!-- prettier-ignore-end -->\n\nafter",
+			want:  "before\n\n<!-- prettier-ignore-start -->\n**ugly**   text\n<!-- prettier-ignore-end -->\n\nafter\n",
+		},
+		{
+			name: "range_preserves_ugly_formatting",
+			input: "<!-- prettier-ignore-start -->\n\n#   ugly heading\n\n- ugly   list\n+ another\n\n<!-- prettier-ignore-end -->",
+			want:  "<!-- prettier-ignore-start -->\n\n#   ugly heading\n\n- ugly   list\n+ another\n\n<!-- prettier-ignore-end -->\n",
+		},
+		{
+			name: "multiple_ranges",
+			input: "<!-- prettier-ignore-start -->\nfirst\n<!-- prettier-ignore-end -->\n\nmiddle\n\n<!-- prettier-ignore-start -->\nsecond\n<!-- prettier-ignore-end -->",
+			want:  "<!-- prettier-ignore-start -->\nfirst\n<!-- prettier-ignore-end -->\n\nmiddle\n\n<!-- prettier-ignore-start -->\nsecond\n<!-- prettier-ignore-end -->\n",
+		},
+		{
+			name: "range_at_start_of_doc",
+			input: "<!-- prettier-ignore-start -->\nugly\n<!-- prettier-ignore-end -->\n\nnormal",
+			want:  "<!-- prettier-ignore-start -->\nugly\n<!-- prettier-ignore-end -->\n\nnormal\n",
+		},
+		{
+			name: "range_at_end_of_doc",
+			input: "normal\n\n<!-- prettier-ignore-start -->\nugly\n<!-- prettier-ignore-end -->",
+			want:  "normal\n\n<!-- prettier-ignore-start -->\nugly\n<!-- prettier-ignore-end -->\n",
+		},
+		{
+			name: "unmatched_start_ignored",
+			input: "before\n\n<!-- prettier-ignore-start -->\n\nugly",
+			want:  "before\n\n<!-- prettier-ignore-start -->\n\nugly\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("render() =\n%q\nwant:\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrettierIgnoreStartEndIdempotent(t *testing.T) {
+	md := newTestMarkdown()
+	input := "before\n\n<!-- prettier-ignore-start -->\n\n**ugly**   text\n\n<!-- prettier-ignore-end -->\n\nafter"
+	first := render(t, md, input)
+	second := render(t, md, first)
+	if first != second {
+		t.Errorf("not idempotent:\nfirst:  %q\nsecond: %q", first, second)
 	}
 }
 

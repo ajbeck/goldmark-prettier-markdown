@@ -236,8 +236,8 @@ goldmark-prettier-markdown/
 - [x] Nested list suppression (no blank line before nested list in list item)
 - [x] Prettier-ignore `<!-- prettier-ignore -->` (suppresses blank line, next element)
 - [x] HTML block sequence (no blank line between adjacent HTML blocks)
-- [ ] Prettier-ignore-start/end ranges (future)
-- [ ] Extra blank line before indented code after list (edge case, future)
+- [x] Prettier-ignore-start/end ranges (verbatim source output between comment pairs)
+- [x] Extra blank line before indented code after list (prettier: shouldPrePrintTripleHardline)
 
 ### Phase 7: Emphasis Escaping + Edge Cases ✅
 
