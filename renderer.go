@@ -81,6 +81,14 @@ type renderContext struct {
 	// ignoredNodes is the set of nodes inside ignore ranges (plus end comments)
 	// that should be skipped entirely during rendering.
 	ignoredNodes map[ast.Node]struct{}
+
+	// fillWrapBuf captures inline content for fill-wrapping in "always" mode.
+	fillWrapBuf *bytes.Buffer
+	// fillWrapWriter is the saved real writer during fill-wrap buffering.
+	fillWrapWriter *markdownWriter
+	// singleLineDepth tracks nesting in non-breakable contexts (links).
+	// When > 0, spaces are not marked as breakable during fill-wrap.
+	singleLineDepth int
 }
 
 // ignoreRange represents a <!-- prettier-ignore-start --> / <!-- prettier-ignore-end --> pair.
@@ -189,7 +197,13 @@ func (r *Renderer) renderParagraph(w util.BufWriter, source []byte, node ast.Nod
 	}
 	if entering {
 		r.writeBlockSeparator(node)
+		if r.rc.config.ProseWrap == ProseWrapAlways {
+			r.beginFillWrap()
+		}
 	} else {
+		if r.rc.config.ProseWrap == ProseWrapAlways {
+			r.endFillWrap()
+		}
 		r.rc.w.FlushLine()
 	}
 	return ast.WalkContinue, nil
@@ -200,9 +214,13 @@ func (r *Renderer) renderHeading(w util.BufWriter, source []byte, node ast.Node,
 		return status, nil
 	}
 	n := node.(*ast.Heading)
+	isSetext := r.isSetextHeading(n)
 	if entering {
 		r.writeBlockSeparator(node)
-		if r.isSetextHeading(n) {
+		if isSetext {
+			if r.rc.config.ProseWrap == ProseWrapAlways {
+				r.beginFillWrap()
+			}
 			return r.renderSetextHeadingEnter(n)
 		}
 		r.rc.w.WriteBytes(bytes.Repeat([]byte("#"), n.Level))
@@ -210,7 +228,10 @@ func (r *Renderer) renderHeading(w util.BufWriter, source []byte, node ast.Node,
 			r.rc.w.WriteBytes([]byte(" "))
 		}
 	} else {
-		if r.isSetextHeading(n) {
+		if isSetext {
+			if r.rc.config.ProseWrap == ProseWrapAlways {
+				r.endFillWrap()
+			}
 			r.renderSetextHeadingExit(n)
 		}
 		r.rc.w.FlushLine()
@@ -453,7 +474,13 @@ func (r *Renderer) renderTextBlock(w util.BufWriter, source []byte, node ast.Nod
 	}
 	if entering {
 		r.writeBlockSeparator(node)
+		if r.rc.config.ProseWrap == ProseWrapAlways {
+			r.beginFillWrap()
+		}
 	} else {
+		if r.rc.config.ProseWrap == ProseWrapAlways {
+			r.endFillWrap()
+		}
 		r.rc.w.FlushLine()
 	}
 	return ast.WalkContinue, nil
@@ -498,14 +525,23 @@ func (r *Renderer) renderText(w util.BufWriter, source []byte, node ast.Node, en
 		text = escapeEmphasisDelimiters(text, node, source)
 	}
 
+	// In "always" mode within a fill-wrap context, mark breakable spaces
+	// within the text content so fillWrap can split on them.
+	if r.inFillWrap() && r.rc.singleLineDepth == 0 {
+		text = markBreakableSpaces(text)
+	}
+
 	r.rc.w.WriteBytes(text)
 	if n.HardLineBreak() {
 		r.rc.w.WriteBytes([]byte("\\"))
 		r.rc.w.EndLine()
 	} else if n.SoftLineBreak() {
-		if r.rc.config.ProseWrap == ProseWrapNever {
+		switch r.rc.config.ProseWrap {
+		case ProseWrapNever:
 			r.writeSoftLineBreakNever(text, n)
-		} else {
+		case ProseWrapAlways:
+			r.writeSoftLineBreakAlways(text, n)
+		default:
 			r.rc.w.EndLine()
 		}
 	}
@@ -530,6 +566,37 @@ func (r *Renderer) writeSoftLineBreakNever(text []byte, n *ast.Text) {
 		r.rc.w.WriteBytes([]byte(" "))
 	}
 	// else: CJ-to-CJ — emit nothing
+}
+
+// writeSoftLineBreakAlways converts a soft line break to a breakable space
+// (sentinel) or non-breakable space/empty based on CJK context and syntax
+// safety.
+func (r *Renderer) writeSoftLineBreakAlways(text []byte, n *ast.Text) {
+	preceding, _ := utf8.DecodeLastRune(text)
+
+	var following rune
+	var nextFirstWord string
+	if next := n.NextSibling(); next != nil {
+		if nextText, ok := next.(*ast.Text); ok {
+			nextVal := nextText.Value(r.rc.source)
+			following, _ = utf8.DecodeRune(nextVal)
+			// Extract the first word to check syntax safety.
+			nextRunes := []rune(string(nextVal))
+			nextFirstWord = extractNextWord(nextRunes, 0)
+		}
+	}
+
+	if !lineBreakCanBeConvertedToSpace(preceding, following) {
+		return // CJ-to-CJ — emit nothing
+	}
+
+	// If the next word would create block syntax, use a non-breakable space.
+	if isSyntaxUnsafeWord(nextFirstWord) {
+		r.rc.w.WriteByte(' ')
+		return
+	}
+
+	r.writeBreakableSpace()
 }
 
 func (r *Renderer) renderString(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -980,12 +1047,18 @@ func (r *Renderer) renderCodeSpan(w util.BufWriter, source []byte, node ast.Node
 func (r *Renderer) renderLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	n := node.(*ast.Link)
 	if entering {
+		if r.inFillWrap() {
+			r.rc.singleLineDepth++
+		}
 		r.rc.w.WriteBytes([]byte("["))
 	} else {
 		r.rc.w.WriteBytes([]byte("]("))
 		r.writeURL(n.Destination, ")")
 		r.writeLinkTitle(n.Title)
 		r.rc.w.WriteBytes([]byte(")"))
+		if r.inFillWrap() {
+			r.rc.singleLineDepth--
+		}
 	}
 	return ast.WalkContinue, nil
 }
@@ -1291,6 +1364,238 @@ func (r *Renderer) renderTaskCheckBox(w util.BufWriter, source []byte, node ast.
 		r.rc.w.WriteBytes([]byte("[ ] "))
 	}
 	return ast.WalkContinue, nil
+}
+
+// --- Fill-wrap for proseWrap "always" ---
+
+// fillWrapSentinel is a zero byte used to mark breakable space positions
+// in the fill-wrap buffer. fillWrap splits on this to identify wrap candidates.
+const fillWrapSentinel = '\x00'
+
+// beginFillWrap starts capturing inline output into a buffer for later
+// fill-wrapping. Call endFillWrap when the block element exits.
+func (r *Renderer) beginFillWrap() {
+	r.rc.fillWrapBuf = new(bytes.Buffer)
+	r.rc.fillWrapWriter = r.rc.w
+	r.rc.w = newMarkdownWriter(r.rc.fillWrapBuf)
+}
+
+// endFillWrap runs the fill-wrap algorithm on the buffered content and
+// writes the wrapped result to the real writer.
+func (r *Renderer) endFillWrap() {
+	r.rc.w.FlushLine()
+	content := r.rc.fillWrapBuf.String()
+	r.rc.w = r.rc.fillWrapWriter
+	r.rc.fillWrapBuf = nil
+	r.rc.fillWrapWriter = nil
+
+	content = strings.TrimRight(content, "\n")
+	if len(content) == 0 {
+		return
+	}
+
+	prefixWidth := r.rc.w.PrefixWidth()
+	wrapped := fillWrap(content, r.rc.config.PrintWidth, prefixWidth)
+	r.rc.w.WriteBytes([]byte(wrapped))
+}
+
+// inFillWrap reports whether inline content is currently being buffered
+// for fill-wrapping.
+func (r *Renderer) inFillWrap() bool {
+	return r.rc.fillWrapBuf != nil
+}
+
+// writeBreakableSpace writes a space that the fill-wrap algorithm may
+// convert to a newline. In non-fill-wrap mode or non-breakable context,
+// writes a plain space.
+func (r *Renderer) writeBreakableSpace() {
+	if r.inFillWrap() && r.rc.singleLineDepth == 0 {
+		r.rc.w.WriteByte(fillWrapSentinel)
+	} else {
+		r.rc.w.WriteByte(' ')
+	}
+}
+
+// fillWrap implements a greedy line-filling algorithm. It splits text on
+// sentinel markers (breakable spaces) and reassembles lines that fit within
+// printWidth, accounting for prefix indentation.
+func fillWrap(text string, printWidth, prefixWidth int) string {
+	if printWidth <= 0 {
+		// Unlimited width — just remove sentinels.
+		return strings.ReplaceAll(text, string(rune(fillWrapSentinel)), " ")
+	}
+
+	available := printWidth - prefixWidth
+	if available <= 0 {
+		return strings.ReplaceAll(text, string(rune(fillWrapSentinel)), " ")
+	}
+
+	parts := strings.Split(text, string(rune(fillWrapSentinel)))
+	if len(parts) <= 1 {
+		return text
+	}
+
+	var result strings.Builder
+	lineWidth := 0
+
+	for i, part := range parts {
+		if i == 0 {
+			result.WriteString(part)
+			lineWidth = displayWidth(part)
+			continue
+		}
+
+		partWidth := displayWidth(part)
+		if lineWidth+1+partWidth > available {
+			result.WriteByte('\n')
+			result.WriteString(part)
+			lineWidth = partWidth
+		} else {
+			result.WriteByte(' ')
+			result.WriteString(part)
+			lineWidth += 1 + partWidth
+		}
+	}
+
+	return result.String()
+}
+
+// displayWidth returns the display width of a string, counting CJK
+// characters as double-width.
+func displayWidth(s string) int {
+	width := 0
+	for _, r := range s {
+		if isCJKRange(r) {
+			width += 2
+		} else {
+			width++
+		}
+	}
+	return width
+}
+
+// markBreakableSpaces replaces breakable spaces in text with the fill-wrap
+// sentinel. A space is not breakable if it's between CJ characters or if
+// the word after it would create block-level syntax when starting a line.
+func markBreakableSpaces(text []byte) []byte {
+	if !bytes.ContainsRune(text, ' ') {
+		return text
+	}
+
+	runes := []rune(string(text))
+	var result []byte
+	for i, r := range runes {
+		if r != ' ' {
+			result = append(result, string(r)...)
+			continue
+		}
+
+		// Check if this space is breakable based on surrounding characters.
+		var prev, next rune
+		if i > 0 {
+			prev = runes[i-1]
+		}
+		if i+1 < len(runes) {
+			next = runes[i+1]
+		}
+
+		breakable := isBreakableSpaceContext(prev, next)
+
+		// Check if the word after this space would create block syntax.
+		if breakable {
+			nextWord := extractNextWord(runes, i+1)
+			if isSyntaxUnsafeWord(nextWord) {
+				breakable = false
+			}
+		}
+
+		if breakable {
+			result = append(result, fillWrapSentinel)
+		} else {
+			result = append(result, ' ')
+		}
+	}
+	return result
+}
+
+// extractNextWord returns the run of non-space characters starting at pos.
+func extractNextWord(runes []rune, pos int) string {
+	end := pos
+	for end < len(runes) && runes[end] != ' ' {
+		end++
+	}
+	return string(runes[pos:end])
+}
+
+// isSyntaxUnsafeWord reports whether a word would create block-level
+// markdown syntax if it appeared at the start of a line. Matches prettier's
+// regex: /^>|^(?:[*+-]|#{1,6}|\d+[).])$/
+func isSyntaxUnsafeWord(word string) bool {
+	if len(word) == 0 {
+		return false
+	}
+
+	// Starts with ">" — could create a blockquote.
+	if word[0] == '>' {
+		return true
+	}
+
+	// Exact match: single list marker.
+	if len(word) == 1 && (word[0] == '*' || word[0] == '+' || word[0] == '-') {
+		return true
+	}
+
+	// Exact match: 1-6 hash characters.
+	if len(word) >= 1 && len(word) <= 6 {
+		allHash := true
+		for i := range len(word) {
+			if word[i] != '#' {
+				allHash = false
+				break
+			}
+		}
+		if allHash {
+			return true
+		}
+	}
+
+	// Exact match: digits followed by "." or ")".
+	if word[0] >= '0' && word[0] <= '9' {
+		i := 0
+		for i < len(word) && word[i] >= '0' && word[i] <= '9' {
+			i++
+		}
+		if i < len(word) && i == len(word)-1 && (word[i] == '.' || word[i] == ')') {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isBreakableSpaceContext reports whether a space between the preceding and
+// following runes is a valid break point for fill-wrapping. Matches
+// prettier's isBreakable logic: CJ-adjacent spaces are not breakable.
+func isBreakableSpaceContext(preceding, following rune) bool {
+	if preceding == 0 || following == 0 {
+		return true
+	}
+
+	prevKind := ClassifyRune(preceding)
+	nextKind := ClassifyRune(following)
+
+	// Korean ↔ CJ: breakable.
+	if (prevKind == KindKLetter && nextKind == KindCJLetter) ||
+		(prevKind == KindCJLetter && nextKind == KindKLetter) {
+		return true
+	}
+
+	// CJ adjacent (either side): not breakable.
+	if prevKind == KindCJLetter || nextKind == KindCJLetter {
+		return false
+	}
+
+	return true
 }
 
 // --- Helpers ---
