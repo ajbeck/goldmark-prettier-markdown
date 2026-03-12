@@ -1111,37 +1111,37 @@ func TestPrettierIgnoreStartEnd(t *testing.T) {
 		want  string
 	}{
 		{
-			name: "basic_range",
+			name:  "basic_range",
 			input: "before\n\n<!-- prettier-ignore-start -->\n\n**ugly**   text\n\n<!-- prettier-ignore-end -->\n\nafter",
 			want:  "before\n\n<!-- prettier-ignore-start -->\n\n**ugly**   text\n\n<!-- prettier-ignore-end -->\n\nafter\n",
 		},
 		{
-			name: "range_no_blank_lines_between",
+			name:  "range_no_blank_lines_between",
 			input: "before\n\n<!-- prettier-ignore-start -->\n**ugly**   text\n<!-- prettier-ignore-end -->\n\nafter",
 			want:  "before\n\n<!-- prettier-ignore-start -->\n**ugly**   text\n<!-- prettier-ignore-end -->\n\nafter\n",
 		},
 		{
-			name: "range_preserves_ugly_formatting",
+			name:  "range_preserves_ugly_formatting",
 			input: "<!-- prettier-ignore-start -->\n\n#   ugly heading\n\n- ugly   list\n+ another\n\n<!-- prettier-ignore-end -->",
 			want:  "<!-- prettier-ignore-start -->\n\n#   ugly heading\n\n- ugly   list\n+ another\n\n<!-- prettier-ignore-end -->\n",
 		},
 		{
-			name: "multiple_ranges",
+			name:  "multiple_ranges",
 			input: "<!-- prettier-ignore-start -->\nfirst\n<!-- prettier-ignore-end -->\n\nmiddle\n\n<!-- prettier-ignore-start -->\nsecond\n<!-- prettier-ignore-end -->",
 			want:  "<!-- prettier-ignore-start -->\nfirst\n<!-- prettier-ignore-end -->\n\nmiddle\n\n<!-- prettier-ignore-start -->\nsecond\n<!-- prettier-ignore-end -->\n",
 		},
 		{
-			name: "range_at_start_of_doc",
+			name:  "range_at_start_of_doc",
 			input: "<!-- prettier-ignore-start -->\nugly\n<!-- prettier-ignore-end -->\n\nnormal",
 			want:  "<!-- prettier-ignore-start -->\nugly\n<!-- prettier-ignore-end -->\n\nnormal\n",
 		},
 		{
-			name: "range_at_end_of_doc",
+			name:  "range_at_end_of_doc",
 			input: "normal\n\n<!-- prettier-ignore-start -->\nugly\n<!-- prettier-ignore-end -->",
 			want:  "normal\n\n<!-- prettier-ignore-start -->\nugly\n<!-- prettier-ignore-end -->\n",
 		},
 		{
-			name: "unmatched_start_ignored",
+			name:  "unmatched_start_ignored",
 			input: "before\n\n<!-- prettier-ignore-start -->\n\nugly",
 			want:  "before\n\n<!-- prettier-ignore-start -->\n\nugly\n",
 		},
