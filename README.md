@@ -7,6 +7,29 @@ Instead of rendering HTML, this renderer takes a goldmark AST and writes it
 back as clean, consistently formatted markdown — matching prettier's opinionated
 formatting rules.
 
+## But Why?!?
+
+We serialise markdown to and from other formats — primarily
+[Atlassian Document Format](https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/)
+(ADF) — for publishing content to Confluence. One key requirement is detecting
+whether a page actually needs to be updated. The problem: converting ADF back to
+markdown produces inconsistently formatted output, so a naive diff against the
+original source will almost always show changes, even when the content is
+identical.
+
+This renderer solves that by providing a canonical formatting pass. Run your
+markdown through it before _and_ after serialisation, and you get a stable
+representation that diffs cleanly.
+
+### Why prettier's rules?
+
+Rather than inventing our own formatting opinions, we mirror
+[prettier](https://prettier.io/)'s markdown formatter — the de facto standard
+for opinionated markdown formatting. This means the output is familiar to anyone
+who already uses prettier, and we can validate our behaviour against prettier's
+own test suite. The formatting rules are documented in detail in
+[docs/FORMATTING_RULES.md](docs/FORMATTING_RULES.md).
+
 ## Installation
 
 ```bash
