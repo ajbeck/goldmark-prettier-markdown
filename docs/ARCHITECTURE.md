@@ -1,5 +1,26 @@
 # Architecture
 
+## Goal: Mirror Prettier's Markdown Formatter
+
+This project is a [goldmark](https://github.com/yuin/goldmark) renderer that produces markdown output matching [prettier](https://prettier.io/)'s markdown formatter as closely as possible. Prettier is the authoritative source of truth for all formatting decisions.
+
+The approach is:
+
+1. **Read prettier's source** to understand the exact formatting rules for each AST node type
+2. **Translate those rules into Go** using goldmark's `renderer.NodeRenderer` interface
+3. **Validate against prettier's test snapshots** to confirm our output matches
+
+Prettier's markdown formatter lives at `src/language-markdown/` in the prettier repo. It operates on an [mdast](https://github.com/syntax-tree/mdast) AST (produced by [remark](https://github.com/remarkjs/remark)), while we operate on goldmark's AST. The ASTs differ in structure, so our implementations can't be 1:1 translations — we implement the same *formatting behavior* using goldmark's node types and walker pattern.
+
+Key differences from prettier's architecture:
+
+- **Prettier** uses a document IR (indent, group, fill, hardline, softline, etc.) that a separate printer resolves to text. We write directly to a line-buffered writer.
+- **Prettier** has a `fill()` document type for prose wrapping. We approximate this with a sentinel-based greedy fill-wrap algorithm.
+- **Prettier** uses `group()` + `softline` for conditional line breaks (e.g., footnote inline/block form). We pre-measure content width and decide before rendering.
+- **Prettier** processes an mdast tree. Goldmark uses its own AST with different node types, segment-based source references, and a walker that calls `entering`/`exiting` callbacks.
+
+---
+
 ## Design Decisions
 
 ### Interface Choice: NodeRenderer (not Renderer)
@@ -21,6 +42,7 @@ We use a custom `markdownWriter` (inspired by goldmark-markdown) that wraps `uti
 1. **Line-buffered output** — content buffered until newline, enabling trailing whitespace trimming
 2. **Prefix stack** — for blockquote `> ` and list item indentation prefixes, with line-range scoping (prefix applies to line N through M)
 3. **Trailing whitespace trimming** — every line is right-trimmed before output
+4. **Prefix width measurement** — `PrefixWidth()` returns the total width of active prefixes on the current line, used by the fill-wrap algorithm to calculate available width
 
 The writer is stored in render context, not on the renderer struct, to keep the renderer stateless across calls.
 
@@ -30,11 +52,16 @@ State that changes during rendering is carried in a `renderContext`:
 
 ```
 renderContext
-├── writer       *markdownWriter   // output with prefix support
-├── source       []byte            // original markdown source
-├── listStack    []listContext     // nested list state (marker, counter)
-├── tableContext *tableContext     // current table rendering state
-└── emphasisNestDepth int         // for emphasis marker selection
+├── writer           *markdownWriter   // output with prefix support
+├── source           []byte            // original markdown source
+├── config           *Config           // options (proseWrap, printWidth, etc.)
+├── listStack        []listContext     // nested list state (marker, counter)
+├── ignoreRanges     []ignoreRange     // prettier-ignore-start/end pairs
+├── ignoredNodes     map[ast.Node]     // nodes to skip during rendering
+├── fillWrapBuf      *bytes.Buffer     // captures content for fill-wrapping
+├── fillWrapWriter   *markdownWriter   // saved writer during fill-wrap
+├── singleLineDepth  int              // nesting in non-breakable contexts
+└── footnoteRefs     map[int][]byte   // footnote index → ref label
 ```
 
 ### GFM Extension Support
@@ -54,11 +81,7 @@ Table rendering requires a two-pass approach: first collect all cell content and
 
 Goldmark doesn't distinguish ATX from setext headings in the AST — both are `ast.Heading`. We need to detect setext to preserve them (matching prettier).
 
-**Approach:** For headings at level 1-2, look at the source immediately after the last content line's segment. If the very next line (after skipping a single newline and any blockquote markers/spaces) consists entirely of `=` or `-` characters, it's setext. This handles:
-
-- Simple setext: `Hello\n=====`
-- Setext inside blockquotes: `> Hello\n> =====`
-- Distinguishing from ATX followed by a list: `## Section\n\n- item` (blank line between prevents false positive)
+**Approach:** For headings at level 1-2, look at the source immediately after the last content line's segment. If the very next line (after skipping a single newline and any blockquote markers/spaces) consists entirely of `=` or `-` characters, it's setext.
 
 The underline itself is NOT stored in the heading node — it was consumed by the parser. To preserve it, we read it from the source using the segment positions.
 
@@ -68,9 +91,11 @@ Prettier's emphasis marker logic requires knowledge of surrounding context (adja
 
 1. Default to `_` for emphasis
 2. Walk child nodes to check for autolinks
-3. Check if the emphasis node has adjacent word siblings without punctuation boundaries (checking Text nodes adjacent to the Emphasis node's position in the source)
+3. Check if the emphasis node has adjacent word siblings without punctuation boundaries
 4. Track emphasis nesting depth in renderContext
 5. For strong: always `**`
+
+**Prettier source:** `print/word.js` (marker selection), `constants.evaluate.js` (default markers)
 
 ### List Marker Alternation
 
@@ -88,61 +113,46 @@ Prettier alternates list markers between **consecutive sibling lists**, NOT by n
 
 We track the "nth sibling index" — counting consecutive same-type lists among the parent's children. Even indices use `-`/`.`, odd use `*`/`)`.
 
+**Prettier source:** `print/list.js`
+
+### ProseWrap Modes
+
+We support all three of prettier's `proseWrap` options:
+
+**`preserve` (default):** Soft line breaks from the source are preserved as-is. No rewrapping.
+
+**`never`:** Soft line breaks within paragraphs become spaces (CJK-aware — CJ-to-CJ joins produce no space). Tables use compact mode (no column padding) when aligned width exceeds printWidth.
+
+**`always`:** Paragraphs are fill-wrapped to fit within `printWidth`. Implementation uses a sentinel-based approach:
+1. During inline rendering, breakable spaces are replaced with `\x00` sentinel bytes
+2. Non-breakable spaces (CJ-adjacent, inside links, before syntax-unsafe words) keep normal spaces
+3. After the paragraph is fully rendered to a buffer, `fillWrap()` splits on sentinels and greedily fills lines
+
+Syntax safety: spaces before words that would create block-level syntax at line start (blockquotes `>`, list markers `*+-`, headings `#`, ordered lists `1.`) are non-breakable. Matches prettier's regex `/^>|^(?:[*+-]|#{1,6}|\d+[).])$/`.
+
+**Prettier source:** `print/whitespace.js` (isBreakable, lineBreakCanBeConvertedToSpace), `print/sentence.js` (fill wrapping), `document/printer/printer.js` (DOC_TYPE_FILL algorithm)
+
 ### CJK Character Classification
 
 Prettier classifies characters into four kinds for whitespace handling: `KIND_NON_CJK`, `KIND_CJ_LETTER`, `KIND_K_LETTER`, `KIND_CJK_PUNCTUATION`.
 
-**Go implementation approach:**
+Go implements this using `unicode` package property tables. CJK characters count as double-width for line width calculations in fill-wrap.
 
-Go has excellent Unicode support via `unicode` and `unicode/utf8` packages. We can implement CJK detection using Unicode property tables:
-
-```go
-// CJ letter: Han, Katakana, Hiragana, Bopomofo (NOT Hangul)
-func isCJLetter(r rune) bool {
-    return unicode.In(r,
-        unicode.Han,
-        unicode.Katakana,
-        unicode.Hiragana,
-        unicode.Bopomofo,
-    ) && !unicode.Is(unicode.Hangul, r)
-}
-
-// Korean letter: Hangul
-func isKLetter(r rune) bool {
-    return unicode.Is(unicode.Hangul, r)
-}
-```
-
-Prettier also matches: Other_Letter, Letter_Number, Other_Symbol, Modifier_Letter, Modifier_Symbol, Nonspacing_Mark from Unicode general categories. We should include these for completeness, filtered to CJK script extensions.
-
-For punctuation detection (CommonMark flanking rules), Go's `unicode` package provides the `Pc`, `Pd`, `Pe`, `Pf`, `Pi`, `Po`, `Ps` categories. We combine these with the ASCII punctuation set.
-
-**Note:** CJK classification is needed even in `proseWrap: "preserve"` mode for correct emphasis marker selection (adjacent word detection). The full whitespace conversion logic is only needed for `proseWrap: "always"` (future).
+**Prettier source:** `print/whitespace.js`
 
 ### CommonMark Flanking Delimiter Detection
 
-Prettier escapes internal `*` and `_` in emphasis/strong content when they could open or close emphasis per CommonMark rules. We implement this in Go:
+Prettier escapes internal `*` and `_` in emphasis/strong content when they could open or close emphasis per CommonMark rules. Our `canOpenOrClose` function implements the full flanking delimiter run algorithm from CommonMark 0.31.2.
 
-```go
-func isLeftFlanking(preceding, following rune) bool {
-    followedByWS := isUnicodeWhitespace(following)
-    followedByPunct := isPunctuation(following)
-    precededByWS := isUnicodeWhitespace(preceding)
-    precededByPunct := isPunctuation(preceding)
+**Prettier source:** `print/word.js`
 
-    return !followedByWS &&
-        (!followedByPunct || (precededByWS || precededByPunct))
-}
+### Footnote Inline vs Block Form
 
-func isRightFlanking(preceding, following rune) bool {
-    // mirror of left-flanking
-}
-```
+Prettier decides between inline (`[^ref]: content`) and block (`[^ref]:\n    content`) form based on:
+- `shouldInlineFootnote`: true when single child is paragraph AND (never mode, OR preserve mode with single-line source paragraph)
+- When not shouldInlineFootnote: uses `group([softline, first_child])` — inline if first child fits, block otherwise. We approximate this by pre-measuring the first paragraph's flat width against printWidth.
 
-For `*`: can open/close if left-flanking OR right-flanking.
-For `_`: stricter — left-flanking can open only if NOT right-flanking or preceded by punctuation.
-
-This logic runs on every word node inside emphasis/strong containers, checking each `*` or `_` character against its surrounding characters (including across node boundaries to adjacent siblings).
+**Prettier source:** `print/mdast.js` (footnoteDefinition case)
 
 ---
 
@@ -152,23 +162,28 @@ This logic runs on every word node inside emphasis/strong containers, checking e
 goldmark-prettier-markdown/
 ├── docs/
 │   ├── FORMATTING_RULES.md    # Complete formatting rules reference
-│   └── ARCHITECTURE.md        # This file
+│   ├── ARCHITECTURE.md        # This file
+│   └── CONTRIBUTING.md        # Contributing guide for agents
 ├── go.mod
-├── renderer.go                # NodeRenderer implementation + RegisterFuncs
+├── renderer.go                # NodeRenderer implementation, all render functions
 ├── writer.go                  # markdownWriter with prefix stack
 ├── options.go                 # Config, Option types, functional options
-├── render_block.go            # Block node renderers (heading, paragraph, etc.)
-├── render_inline.go           # Inline node renderers (text, emphasis, etc.)
-├── render_table.go            # GFM table rendering (two-pass)
-├── render_list.go             # List rendering with marker alternation
-├── emphasis.go                # Emphasis marker selection + escaping logic
-├── cjk.go                     # CJK character classification (future: prose wrap)
 └── renderer_test.go           # Tests
 ```
 
+All render functions live in `renderer.go` organized by section:
+- Block node renderers (document, heading, paragraph, blockquote, code, HTML, list, thematic break)
+- Inline node renderers (text, emphasis, code span, link, image, autolink, raw HTML)
+- GFM extension renderers (table, strikethrough, task checkbox)
+- Footnote extension renderers (footnote list, footnote, footnote link, backlink)
+- Definition list extension renderers
+- Wiki link extension renderer
+- Fill-wrap infrastructure (beginFillWrap, endFillWrap, fillWrap, markBreakableSpaces)
+- Helpers (block separator, ignore ranges, URL encoding, list utilities)
+
 ---
 
-## Implementation Phases
+## Implementation Status
 
 ### Phase 1: Core Skeleton ✅
 
@@ -194,12 +209,7 @@ goldmark-prettier-markdown/
 
 - [x] Text (soft/hard line breaks)
 - [x] String (verbatim)
-- [x] Emphasis — full marker selection per prettier rules:
-  - `_` default for emphasis, `**` always for strong
-  - `*` when adjacent word without punctuation boundary (e.g., `a*b*c`)
-  - `*` when inside strong with adjacent words (e.g., `a***b***c`)
-  - `*` when nested inside another emphasis
-  - Preserve original marker for autolink children
+- [x] Emphasis — full marker selection per prettier rules
 - [x] Inline code (backtick counting, space padding per CommonMark rules)
 - [x] Link (`[text](url "title")`, quote style option, URL angle-bracket wrapping)
 - [x] Image (`![alt](url "title")`)
@@ -249,10 +259,13 @@ goldmark-prettier-markdown/
 - [x] URL encoding for dangerous characters (done in Phase 3)
 - [x] Escaping idempotency verified
 
-### Future Work
+### Phase 8: ProseWrap Modes ✅
 
 - [x] `proseWrap: "always"` — fill-wrap algorithm with sentinel-marked breakable spaces, CJK-aware break point detection, prefix-aware print width targeting, syntax safety guards for block-level markers
 - [x] `proseWrap: "never"` — soft line breaks → space (CJK-aware), compact table mode when exceeding print width
+
+### Phase 9: Extension Nodes ✅
+
 - [x] Footnote support (`FootnoteList`, `Footnote`, `FootnoteLink`, `FootnoteBacklink`) — inline vs block form based on child count, paragraph line count, and proseWrap mode
 - [x] Definition list support (`DefinitionList`, `DefinitionTerm`, `DefinitionDescription`) — tight/loose, multi-term, multi-description
-- [ ] Wiki link support
+- [x] Wiki link support (`go.abhg.dev/goldmark/wikilink`) — `[[target]]`, `[[target|label]]`, `[[target#fragment]]`, `![[embed]]`
