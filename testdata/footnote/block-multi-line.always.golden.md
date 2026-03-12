@@ -1,0 +1,3 @@
+Text[^a].
+
+[^a]: line one line two
