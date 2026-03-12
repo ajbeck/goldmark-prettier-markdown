@@ -14,6 +14,7 @@ import (
 	east "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/util"
+	"go.abhg.dev/goldmark/wikilink"
 )
 
 // Renderer renders goldmark AST nodes as prettier-formatted markdown.
@@ -76,6 +77,9 @@ func (r *Renderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
 	reg.Register(east.KindDefinitionList, r.renderDefinitionList)
 	reg.Register(east.KindDefinitionTerm, r.renderDefinitionTerm)
 	reg.Register(east.KindDefinitionDescription, r.renderDefinitionDescription)
+
+	// Wiki link extension
+	reg.Register(wikilink.Kind, r.renderWikiLink)
 }
 
 // renderContext carries mutable state during a single Render call.
@@ -1600,6 +1604,50 @@ func (r *Renderer) renderDefinitionDescription(w util.BufWriter, source []byte, 
 		r.rc.w.FlushLine()
 	}
 	return ast.WalkContinue, nil
+}
+
+// --- Wiki link extension node renderer ---
+
+func (r *Renderer) renderWikiLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if !entering {
+		return ast.WalkContinue, nil
+	}
+	wl := node.(*wikilink.Node)
+
+	// Reconstruct the wiki link content from target, fragment, and label.
+	// [[Target]] or [[Target#Fragment]] or [[Target|Label]] or [[Target#Fragment|Label]]
+	var content string
+	content = string(wl.Target)
+	if len(wl.Fragment) > 0 {
+		content += "#" + string(wl.Fragment)
+	}
+
+	// Check if there's a pipe-separated label (child text differs from target+fragment).
+	label := r.wikiLinkChildText(wl, source)
+	targetWithFragment := content
+	if label != targetWithFragment {
+		content += "|" + label
+	}
+
+	if wl.Embed {
+		r.rc.w.WriteBytes([]byte("!"))
+	}
+	r.rc.w.WriteBytes([]byte("[["))
+	r.rc.w.WriteBytes([]byte(content))
+	r.rc.w.WriteBytes([]byte("]]"))
+
+	return ast.WalkSkipChildren, nil
+}
+
+// wikiLinkChildText returns the concatenated text of a wiki link's children.
+func (r *Renderer) wikiLinkChildText(wl *wikilink.Node, source []byte) string {
+	var buf bytes.Buffer
+	for c := wl.FirstChild(); c != nil; c = c.NextSibling() {
+		if t, ok := c.(*ast.Text); ok {
+			buf.Write(t.Value(source))
+		}
+	}
+	return buf.String()
 }
 
 // --- Fill-wrap for proseWrap "always" ---

@@ -9,6 +9,7 @@ import (
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/util"
+	"go.abhg.dev/goldmark/wikilink"
 
 	prettier "github.com/ajbeck/goldmark-prettier-markdown"
 )
@@ -66,6 +67,25 @@ func newTestMarkdownDefList(opts ...prettier.Option) goldmark.Markdown {
 		parser.WithBlockParsers(
 			util.Prioritized(extension.NewDefinitionListParser(), 101),
 			util.Prioritized(extension.NewDefinitionDescriptionParser(), 102),
+		),
+	)
+	return md
+}
+
+func newTestMarkdownWikiLink(opts ...prettier.Option) goldmark.Markdown {
+	r := prettier.NewRenderer(opts...)
+	md := goldmark.New(
+		goldmark.WithRenderer(
+			renderer.NewRenderer(
+				renderer.WithNodeRenderers(
+					util.Prioritized(r, 1000),
+				),
+			),
+		),
+	)
+	md.Parser().AddOptions(
+		parser.WithInlineParsers(
+			util.Prioritized(&wikilink.Parser{}, 199),
 		),
 	)
 	return md
@@ -2038,6 +2058,72 @@ func TestDefinitionListIdempotent(t *testing.T) {
 		"Apple\n:   A fruit.\n\nOrange\n:   Another fruit.\n",
 		"Apple\n:   A fruit.\n:   A company.\n",
 		"Term\n\n:   First paragraph.\n\n    Second paragraph.\n",
+	}
+	for _, input := range inputs {
+		first := render(t, md, input)
+		second := render(t, md, first)
+		if first != second {
+			t.Errorf("not idempotent for input %q:\nfirst:  %q\nsecond: %q", input, first, second)
+		}
+	}
+}
+
+func TestWikiLink(t *testing.T) {
+	md := newTestMarkdownWikiLink()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "simple",
+			input: "[[A simple wiki link]]\n",
+			want:  "[[A simple wiki link]]\n",
+		},
+		{
+			name:  "with pipe label",
+			input: "[[Target page|Display text]]\n",
+			want:  "[[Target page|Display text]]\n",
+		},
+		{
+			name:  "embed",
+			input: "![[image.png]]\n",
+			want:  "![[image.png]]\n",
+		},
+		{
+			name:  "with fragment",
+			input: "[[Page#Section]]\n",
+			want:  "[[Page#Section]]\n",
+		},
+		{
+			name:  "in prose",
+			input: "See [[wiki link]] for details.\n",
+			want:  "See [[wiki link]] for details.\n",
+		},
+		{
+			name:  "multiple wiki links",
+			input: "[[Link A]] and [[Link B]]\n",
+			want:  "[[Link A]] and [[Link B]]\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWikiLinkIdempotent(t *testing.T) {
+	md := newTestMarkdownWikiLink()
+	inputs := []string{
+		"[[A simple wiki link]]\n",
+		"[[Target page|Display text]]\n",
+		"![[image.png]]\n",
+		"[[Page#Section]]\n",
+		"See [[wiki link]] for details.\n",
 	}
 	for _, input := range inputs {
 		first := render(t, md, input)
