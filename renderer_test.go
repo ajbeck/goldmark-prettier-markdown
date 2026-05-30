@@ -166,6 +166,16 @@ func TestAlignedOrderedList(t *testing.T) {
 	}
 }
 
+func TestZeroTabWidthUsesDefault(t *testing.T) {
+	md := newTestMarkdown(prettier.WithTabWidth(0))
+	input := "1. item"
+	want := "1. item\n"
+	got := render(t, md, input)
+	if got != want {
+		t.Errorf("render(%q) = %q, want %q", input, got, want)
+	}
+}
+
 func TestProseWrapNeverCJK(t *testing.T) {
 	md := newTestMarkdown(prettier.WithProseWrap(prettier.ProseWrapNever))
 	tests := []struct {
@@ -268,7 +278,12 @@ func TestProseWrapAlways(t *testing.T) {
 		{
 			name:  "preserve_hard_line_break",
 			input: "hello\\\nworld this is a test of wrapping at forty characters",
-			want:  "hello\\\nworld this is a test of wrapping\nat forty characters\n",
+			want:  "hello\\\nworld this is a test of wrapping at\nforty characters\n",
+		},
+		{
+			name:  "reset_width_after_hard_line_break",
+			input: "12345678901234567890\\\na b c d e",
+			want:  "12345678901234567890\\\na b c d e\n",
 		},
 		{
 			name:  "preserve_paragraphs",
@@ -331,6 +346,49 @@ func TestProseWrapAlways(t *testing.T) {
 			got := render(t, md, tt.input)
 			if got != tt.want {
 				t.Errorf("input:  %q\ngot:    %q\nwant:   %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrettierIgnoreNextPreservesSource(t *testing.T) {
+	md := newTestMarkdown()
+	input := "<!-- prettier-ignore -->\n#   ugly heading"
+	want := "<!-- prettier-ignore -->\n#   ugly heading\n"
+	got := render(t, md, input)
+	if got != want {
+		t.Errorf("render(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestRawBlocksPreserveTrailingSpaces(t *testing.T) {
+	md := newTestMarkdown()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "fenced_code",
+			input: "```\nline   \n```\n",
+			want:  "```\nline   \n```\n",
+		},
+		{
+			name:  "indented_code",
+			input: "    line   \n",
+			want:  "    line   \n",
+		},
+		{
+			name:  "ignored_range",
+			input: "<!-- prettier-ignore-start -->\nline   \n<!-- prettier-ignore-end -->\n",
+			want:  "<!-- prettier-ignore-start -->\nline   \n<!-- prettier-ignore-end -->\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := render(t, md, tt.input)
+			if got != tt.want {
+				t.Errorf("render(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

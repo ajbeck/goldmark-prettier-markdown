@@ -10,17 +10,18 @@ This repository is a Go module for `github.com/ajbeck/goldmark-prettier-markdown
 - `renderer_test.go` and `golden_test.go`: unit and golden-file tests.
 - `testdata/`: Markdown input and expected output fixtures, grouped by feature.
 - `docs/`: architecture, formatting rules, and contribution notes.
+- `cmd/scripts/`: Go-native project automation for local and CI workflows.
 
 ## Build, Test, and Development Commands
 
-- `make fmt`: runs `go fmt ./...`.
-- `make vet`: runs `go vet ./...` after formatting.
-- `make test`: runs `go test ./...`; pass arguments with `make test ARGS="-run TestName"`.
-- `make build`: runs `go build ./...`.
-- `make all`: runs formatting, vetting, tests, and build validation.
-- `make clean`: removes `.stamps/` Makefile cache files.
+- `go run ./cmd/scripts fmt`: runs `go fmt ./...`.
+- `go run ./cmd/scripts vet`: runs `go vet ./...`.
+- `go run ./cmd/scripts test`: runs `go test ./...`; pass arguments after the target or with `ARGS`.
+- `go run ./cmd/scripts build`: runs `go build ./...`.
+- `go run ./cmd/scripts ci`: runs formatting, vetting, tests, and build validation.
+- `go run ./cmd/scripts clean`: removes leftover `.stamps/` cache files from the previous workflow.
 
-Use `go test ./...` directly when you do not need the Makefile's formatting and vet prerequisites.
+Run `go run ./cmd/scripts help` to list targets and examples.
 
 ## Coding Style & Naming Conventions
 
@@ -28,7 +29,7 @@ Use standard Go formatting with tabs as produced by `go fmt`. Keep exported API 
 
 ## Testing Guidelines
 
-Tests use Go's standard `testing` package. Add focused table-driven tests in `renderer_test.go` for behavior and golden fixtures under `testdata/<feature>/` for formatting compatibility. Fixture names follow patterns such as `basic.input.md`, `basic.golden.md`, and mode-specific outputs like `simple.always.golden.md` or `simple.never.golden.md`. Run `make test` before submitting changes.
+Tests use Go's standard `testing` package. Add focused table-driven tests in `renderer_test.go` for behavior and golden fixtures under `testdata/<feature>/` for formatting compatibility. Fixture names follow patterns such as `basic.input.md`, `basic.golden.md`, and mode-specific outputs like `simple.always.golden.md` or `simple.never.golden.md`. Run `go run ./cmd/scripts test` before submitting changes.
 
 ## Commit & Pull Request Guidelines
 

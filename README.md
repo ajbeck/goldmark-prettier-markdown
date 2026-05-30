@@ -49,8 +49,11 @@ import (
 	"log"
 
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/util"
+	"go.abhg.dev/goldmark/wikilink"
 
 	prettier "github.com/ajbeck/goldmark-prettier-markdown"
 )
@@ -58,6 +61,25 @@ import (
 func main() {
 	r := prettier.NewRenderer()
 	md := goldmark.New(
+		goldmark.WithParserOptions(
+			parser.WithParagraphTransformers(
+				util.Prioritized(extension.NewTableParagraphTransformer(), 200),
+			),
+			parser.WithInlineParsers(
+				util.Prioritized(extension.NewTaskCheckBoxParser(), 0),
+				util.Prioritized(extension.NewFootnoteParser(), 101),
+				util.Prioritized(&wikilink.Parser{}, 199),
+				util.Prioritized(extension.NewStrikethroughParser(), 500),
+			),
+			parser.WithBlockParsers(
+				util.Prioritized(extension.NewDefinitionListParser(), 101),
+				util.Prioritized(extension.NewDefinitionDescriptionParser(), 102),
+				util.Prioritized(extension.NewFootnoteBlockParser(), 999),
+			),
+			parser.WithASTTransformers(
+				util.Prioritized(extension.NewFootnoteASTTransformer(), 999),
+			),
+		),
 		goldmark.WithRenderer(
 			renderer.NewRenderer(
 				renderer.WithNodeRenderers(
@@ -113,12 +135,17 @@ emphasis, strong, links, autolinks, images, hard breaks, raw HTML.
 ### GFM Extensions
 
 Tables (with column alignment and compact mode), strikethrough, task checkboxes.
+Enable goldmark's parser extensions, as shown in the usage example, so these
+nodes are present in the AST.
 
 ### Other Extensions
 
 - **Footnotes** — `[^label]` references and definitions, with inline or block layout
 - **Definition lists** — terms and descriptions
 - **Wiki links** — `[[target]]` and `[[target|label]]` via [goldmark-wikilink](https://go.abhg.dev/goldmark/wikilink)
+
+These features also require their parser extensions. Wiki links use
+`go.abhg.dev/goldmark/wikilink`.
 
 ## Formatting Highlights
 
@@ -135,6 +162,18 @@ This renderer applies the same formatting rules as prettier's markdown formatter
 - `<!-- prettier-ignore -->` directives are respected
 
 For the complete formatting specification, see [docs/FORMATTING_RULES.md](docs/FORMATTING_RULES.md).
+
+## Development
+
+Project tasks are defined in `cmd/scripts`.
+
+```bash
+go run ./cmd/scripts ci
+go run ./cmd/scripts test
+go run ./cmd/scripts test -run TestProseWrapAlways
+```
+
+Run `go run ./cmd/scripts help` for all targets.
 
 ## License
 
