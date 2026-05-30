@@ -258,3 +258,18 @@ feat(deflist): add definition list extension support
 fix: treat PrintWidth <= 0 as unlimited for compact table selection
 docs: unwrap prose lines in documentation
 ```
+
+## Release Process
+
+This repository uses tag-first Go module releases. To publish a release, run the
+full validation suite and push a semver tag:
+
+```bash
+go run ./cmd/scripts ci
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow runs on pushed `v*.*.*` tags and creates the GitHub Release
+after validation passes. Do not retag an existing version; publish a new patch
+version instead.

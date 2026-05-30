@@ -175,6 +175,18 @@ go run ./cmd/scripts test -run TestProseWrapAlways
 
 Run `go run ./cmd/scripts help` for all targets.
 
+## Releases
+
+Releases are tag-first. Create and push an immutable Go module semver tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow validates the tagged commit, then creates a GitHub Release
+for that tag.
+
 ## License
 
 MIT
