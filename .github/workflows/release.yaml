@@ -1,65 +1,47 @@
 name: Release
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
 
 permissions:
   contents: write
 
 jobs:
   release:
+    name: Release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        # https://github.com/actions/checkout
         uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
 
-      - name: Read version
-        id: version
+      - name: Set up Go
+        uses: actions/setup-go@v6.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Validate tag
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          VERSION=$(cat VERSION | tr -d '[:space:]')
-
-          # Semver regex from https://semver.org with named capture groups
-          # https://regex101.com/r/Ly7O1x/3/
-          read -r MAJOR MINOR PATCH < <(echo "$VERSION" | perl -ne '
-            my $re = qr/^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-(?<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+(?<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
-            if (/$re/) {
-              print "$+{major} $+{minor} $+{patch}\n";
-            } else {
-              print STDERR "ERROR: Invalid semver format: $_\n";
-              exit 1;
-            }
-          ')
-
-          if [[ -z "$MAJOR" ]]; then
-            echo "::error::Failed to parse VERSION file"
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag must be a valid Go module semver tag, got $TAG"
             exit 1
           fi
 
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "major=$MAJOR" >> $GITHUB_OUTPUT
-          echo "minor=$MAJOR.$MINOR" >> $GITHUB_OUTPUT
-
-      - name: Create tags
-        run: |
-          git config user.name "beck-bot"
-          git config user.email "hello@beckbot.com"
-
-          # Create full version tag (must not exist)
-          git tag "v${{ steps.version.outputs.version }}"
-
-          # Create/update floating tags
-          git tag -f "v${{ steps.version.outputs.minor }}"
-          git tag -f "v${{ steps.version.outputs.major }}"
-
-          # Push all tags
-          git push origin "v${{ steps.version.outputs.version }}"
-          git push -f origin "v${{ steps.version.outputs.minor }}"
-          git push -f origin "v${{ steps.version.outputs.major }}"
+      - name: Validate module
+        run: go run ./cmd/scripts ci
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "v${{ steps.version.outputs.version }}" --generate-notes
+          TAG: ${{ github.ref_name }}
+        run: |
+          args=("$TAG" "--generate-notes")
+          if [[ "$TAG" == *-* ]]; then
+            args+=("--prerelease")
+          fi
+          gh release create "${args[@]}"

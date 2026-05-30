@@ -37,6 +37,8 @@ Recent commits use concise conventional prefixes, including `docs:`, `test:`, an
 
 Pull requests should describe the formatting behavior changed, list relevant test coverage, and reference Prettier behavior or fixtures when applicable. For visible Markdown output changes, include before/after examples or fixture names. Update `docs/ARCHITECTURE.md` or `docs/FORMATTING_RULES.md` when changing supported node behavior or formatting rules.
 
+Releases are tag-first. Push an immutable semver tag such as `v0.1.0`; the release workflow validates the tagged commit and creates the GitHub Release. Do not edit or recreate an existing release tag.
+
 ## Agent-Specific Instructions
 
 Prettier is the source of truth for formatting decisions. When behavior is unclear, compare against Prettier Markdown fixtures before changing renderer logic. Keep edits scoped, preserve existing fixtures unless intentionally updating expected output, and do not rewrite unrelated formatting rules while fixing a single node type.
