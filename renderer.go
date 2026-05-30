@@ -96,6 +96,9 @@ type renderContext struct {
 	// ignoredNodes is the set of nodes inside ignore ranges (plus end comments)
 	// that should be skipped entirely during rendering.
 	ignoredNodes map[ast.Node]struct{}
+	// ignoredNextNodes is the set of nodes following a one-line
+	// <!-- prettier-ignore --> directive.
+	ignoredNextNodes map[ast.Node]struct{}
 
 	// fillWrapBuf captures inline content for fill-wrapping in "always" mode.
 	fillWrapBuf *bytes.Buffer
@@ -156,6 +159,13 @@ func (r *Renderer) scanIgnoreRanges(doc ast.Node) {
 	for child := doc.FirstChild(); child != nil; child = child.NextSibling() {
 		kind := prettierIgnoreKind(child, r.rc.source)
 		switch kind {
+		case "next":
+			if next := child.NextSibling(); next != nil {
+				if r.rc.ignoredNextNodes == nil {
+					r.rc.ignoredNextNodes = make(map[ast.Node]struct{})
+				}
+				r.rc.ignoredNextNodes[next] = struct{}{}
+			}
 		case "start":
 			if startNode == nil {
 				startNode = child
@@ -1725,19 +1735,23 @@ func fillWrap(text string, printWidth, prefixWidth int) string {
 	for i, part := range parts {
 		if i == 0 {
 			result.WriteString(part)
-			lineWidth = displayWidth(part)
+			lineWidth = displayWidthAfterLastLineBreak(part)
 			continue
 		}
 
-		partWidth := displayWidth(part)
+		partWidth := displayWidthBeforeFirstLineBreak(part)
 		if lineWidth+1+partWidth > available {
 			result.WriteByte('\n')
 			result.WriteString(part)
-			lineWidth = partWidth
+			lineWidth = displayWidthAfterLastLineBreak(part)
 		} else {
 			result.WriteByte(' ')
 			result.WriteString(part)
-			lineWidth += 1 + partWidth
+			if strings.ContainsRune(part, '\n') {
+				lineWidth = displayWidthAfterLastLineBreak(part)
+			} else {
+				lineWidth += 1 + partWidth
+			}
 		}
 	}
 
@@ -1756,6 +1770,20 @@ func displayWidth(s string) int {
 		}
 	}
 	return width
+}
+
+func displayWidthBeforeFirstLineBreak(s string) int {
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		return displayWidth(s[:idx])
+	}
+	return displayWidth(s)
+}
+
+func displayWidthAfterLastLineBreak(s string) int {
+	if idx := strings.LastIndexByte(s, '\n'); idx >= 0 {
+		return displayWidth(s[idx+1:])
+	}
+	return displayWidth(s)
 }
 
 // markBreakableSpaces replaces breakable spaces in text with the fill-wrap
@@ -1889,26 +1917,32 @@ func isBreakableSpaceContext(preceding, following rune) bool {
 // range is rendered verbatim from source. If it is any other node in the
 // range, it is skipped. Returns true if the node was handled.
 func (r *Renderer) handleIgnoredNode(node ast.Node, entering bool) (ast.WalkStatus, bool) {
-	if len(r.rc.ignoreRanges) == 0 {
-		return 0, false
+	if _, ignored := r.rc.ignoredNextNodes[node]; ignored {
+		if entering {
+			r.writeBlockSeparator(node)
+			r.renderNodeSource(node)
+		}
+		return ast.WalkSkipChildren, true
 	}
 
-	// Check if this node starts an ignore range.
 	if entering {
+		// Check if this node starts an ignore range.
 		for _, ir := range r.rc.ignoreRanges {
 			if node == ir.startNode {
 				r.writeBlockSeparator(node)
 				// Write start comment verbatim from source.
 				r.renderLines(node)
 				if hb, ok := node.(*ast.HTMLBlock); ok && hb.HasClosure() {
-					r.rc.w.WriteBytes(hb.ClosureLine.Value(r.rc.source))
+					r.writeRawBytes(hb.ClosureLine.Value(r.rc.source))
+					r.flushRawLine()
 				}
 				// Write raw source between start and end comments.
-				r.rc.w.WriteBytes(r.rc.source[ir.betweenStart:ir.betweenEnd])
+				r.writeRawBytes(r.rc.source[ir.betweenStart:ir.betweenEnd])
 				// Write end comment verbatim from source.
 				r.renderLines(ir.endNode)
 				if hb, ok := ir.endNode.(*ast.HTMLBlock); ok && hb.HasClosure() {
-					r.rc.w.WriteBytes(hb.ClosureLine.Value(r.rc.source))
+					r.writeRawBytes(hb.ClosureLine.Value(r.rc.source))
+					r.flushRawLine()
 				}
 				r.rc.w.FlushLine()
 				return ast.WalkSkipChildren, true
@@ -2046,8 +2080,24 @@ func (r *Renderer) writeLinkTitle(title []byte) {
 	r.rc.w.WriteBytes([]byte(" " + string(q) + escaped + string(q)))
 }
 
-// renderLines writes the line segments of a block node.
+// writeRawBytes writes source bytes without trimming trailing line whitespace.
+func (r *Renderer) writeRawBytes(b []byte) {
+	r.rc.w.PushPreserveTrailingWhitespace()
+	r.rc.w.WriteBytes(b)
+	r.rc.w.PopPreserveTrailingWhitespace()
+}
+
+func (r *Renderer) flushRawLine() {
+	r.rc.w.PushPreserveTrailingWhitespace()
+	r.rc.w.FlushLine()
+	r.rc.w.PopPreserveTrailingWhitespace()
+}
+
+// renderLines writes the line segments of a block node verbatim.
 func (r *Renderer) renderLines(node ast.Node) {
+	r.rc.w.PushPreserveTrailingWhitespace()
+	defer r.rc.w.PopPreserveTrailingWhitespace()
+
 	lines := node.Lines()
 	for i := range lines.Len() {
 		seg := lines.At(i)
@@ -2055,6 +2105,87 @@ func (r *Renderer) renderLines(node ast.Node) {
 		r.rc.w.WriteBytes(val)
 		r.rc.w.FlushLine()
 	}
+}
+
+// renderNodeSource writes the original source for a block node.
+func (r *Renderer) renderNodeSource(node ast.Node) {
+	start, end, ok := nodeSourceRange(node, r.rc.source)
+	if !ok {
+		return
+	}
+	r.writeRawBytes(r.rc.source[start:end])
+	r.flushRawLine()
+}
+
+func nodeSourceRange(node ast.Node, source []byte) (int, int, bool) {
+	start, end, ok := nodeLineRange(node)
+	if !ok {
+		return 0, 0, false
+	}
+	start = lineStartOffset(source, start)
+	return start, end, true
+}
+
+func nodeLineRange(node ast.Node) (int, int, bool) {
+	ok := false
+	var start, end int
+	if node.Type() == ast.TypeBlock {
+		lines := node.Lines()
+		for i := range lines.Len() {
+			seg := lines.At(i)
+			if !ok || seg.Start < start {
+				start = seg.Start
+			}
+			if !ok || seg.Stop > end {
+				end = seg.Stop
+			}
+			ok = true
+		}
+	}
+
+	if hb, isHTMLBlock := node.(*ast.HTMLBlock); isHTMLBlock && hb.HasClosure() {
+		if !ok || hb.ClosureLine.Start < start {
+			start = hb.ClosureLine.Start
+		}
+		if !ok || hb.ClosureLine.Stop > end {
+			end = hb.ClosureLine.Stop
+		}
+		ok = true
+	}
+
+	if code, isFencedCodeBlock := node.(*ast.FencedCodeBlock); isFencedCodeBlock && code.Info != nil {
+		seg := code.Info.Segment
+		if !ok || seg.Start < start {
+			start = seg.Start
+		}
+		if !ok || seg.Stop > end {
+			end = seg.Stop
+		}
+		ok = true
+	}
+
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		childStart, childEnd, childOK := nodeLineRange(child)
+		if !childOK {
+			continue
+		}
+		if !ok || childStart < start {
+			start = childStart
+		}
+		if !ok || childEnd > end {
+			end = childEnd
+		}
+		ok = true
+	}
+
+	return start, end, ok
+}
+
+func lineStartOffset(source []byte, pos int) int {
+	for pos > 0 && source[pos-1] != '\n' {
+		pos--
+	}
+	return pos
 }
 
 // nthListSiblingIndex counts the index of the given list node among

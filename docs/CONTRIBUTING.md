@@ -8,7 +8,7 @@ This is a [goldmark](https://github.com/yuin/goldmark) renderer that outputs mar
 
 **Language:** Go (1.26+)
 **Dependencies:** goldmark, go.abhg.dev/goldmark/wikilink
-**Test command:** `go test ./...`
+**Test command:** `go run ./cmd/scripts test`
 
 ## Setting Up the Prettier Reference
 
@@ -236,13 +236,16 @@ Every formatting operation must be idempotent — rendering the output a second 
 
 ```bash
 # Full suite
-go test ./...
+go run ./cmd/scripts test
 
 # Specific test
-go test -run TestFootnoteBlock -v
+go run ./cmd/scripts test -run TestFootnoteBlock -v
 
 # No cache
-go test ./... -count=1
+go run ./cmd/scripts test ./... -count=1
+
+# Full validation
+go run ./cmd/scripts ci
 ```
 
 ## Commit Convention

@@ -23,13 +23,15 @@ type linePrefix struct {
 }
 
 // markdownWriter buffers output line-by-line, applies line prefixes (for
-// blockquotes and list indentation), and trims trailing whitespace.
+// blockquotes and list indentation), and trims trailing whitespace unless raw
+// source preservation is active.
 type markdownWriter struct {
-	buf      bytes.Buffer
-	output   io.Writer
-	prefixes []linePrefix
-	line     int
-	err      error
+	buf                        bytes.Buffer
+	output                     io.Writer
+	prefixes                   []linePrefix
+	line                       int
+	preserveTrailingWhitespace int
+	err                        error
 }
 
 var _ util.BufWriter = (*markdownWriter)(nil)
@@ -44,6 +46,7 @@ func (m *markdownWriter) Reset(w io.Writer) {
 	m.output = w
 	m.prefixes = m.prefixes[:0]
 	m.line = 0
+	m.preserveTrailingWhitespace = 0
 	m.err = nil
 }
 
@@ -80,6 +83,17 @@ func (m *markdownWriter) PopPrefix() {
 	m.prefixes = m.prefixes[:len(m.prefixes)-1]
 }
 
+// PushPreserveTrailingWhitespace disables line-end trimming for verbatim
+// source regions such as code blocks and prettier-ignore output.
+func (m *markdownWriter) PushPreserveTrailingWhitespace() {
+	m.preserveTrailingWhitespace++
+}
+
+// PopPreserveTrailingWhitespace restores normal line-end trimming.
+func (m *markdownWriter) PopPreserveTrailingWhitespace() {
+	m.preserveTrailingWhitespace--
+}
+
 // FlushLine ends the current line if the buffer is non-empty.
 func (m *markdownWriter) FlushLine() {
 	if m.buf.Len() > 0 {
@@ -113,10 +127,12 @@ func (m *markdownWriter) WriteBytes(data []byte) int {
 		}
 		prefixed.Write(line)
 
-		// Trim trailing whitespace, then re-add the newline.
-		trimmed := bytes.TrimRightFunc(prefixed.Bytes(), unicode.IsSpace)
-		prefixed.Truncate(len(trimmed))
-		prefixed.WriteByte(lineDelim)
+		if m.preserveTrailingWhitespace == 0 {
+			// Trim trailing whitespace, then re-add the newline.
+			trimmed := bytes.TrimRightFunc(prefixed.Bytes(), unicode.IsSpace)
+			prefixed.Truncate(len(trimmed))
+			prefixed.WriteByte(lineDelim)
+		}
 
 		if _, err := m.output.Write(prefixed.Bytes()); err != nil {
 			m.err = err

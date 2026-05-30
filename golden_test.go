@@ -39,21 +39,21 @@ type categoryConfig struct {
 }
 
 var categories = map[string]categoryConfig{
-	"heading":       {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"emphasis":      {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"list":          {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"table":         {newMarkdown: newTestMarkdownGFM, variants: defaultVariants},
-	"blockquote":    {newMarkdown: newTestMarkdown, variants: proseWrapVariants},
-	"code":          {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"inline":        {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"html":          {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"paragraph":     {newMarkdown: newTestMarkdown, variants: proseWrapVariants},
+	"heading":        {newMarkdown: newTestMarkdown, variants: defaultVariants},
+	"emphasis":       {newMarkdown: newTestMarkdown, variants: defaultVariants},
+	"list":           {newMarkdown: newTestMarkdown, variants: defaultVariants},
+	"table":          {newMarkdown: newTestMarkdownGFM, variants: defaultVariants},
+	"blockquote":     {newMarkdown: newTestMarkdown, variants: proseWrapVariants},
+	"code":           {newMarkdown: newTestMarkdown, variants: defaultVariants},
+	"inline":         {newMarkdown: newTestMarkdown, variants: defaultVariants},
+	"html":           {newMarkdown: newTestMarkdown, variants: defaultVariants},
+	"paragraph":      {newMarkdown: newTestMarkdown, variants: proseWrapVariants},
 	"thematic-break": {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"ignore":        {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"strikethrough": {newMarkdown: newTestMarkdownGFM, variants: defaultVariants},
-	"footnote":      {newMarkdown: newTestMarkdownFootnote, variants: proseWrapVariants},
-	"deflist":       {newMarkdown: newTestMarkdownDefList, variants: defaultVariants},
-	"wikilink":      {newMarkdown: newTestMarkdownWikiLink, variants: defaultVariants},
+	"ignore":         {newMarkdown: newTestMarkdown, variants: defaultVariants},
+	"strikethrough":  {newMarkdown: newTestMarkdownGFM, variants: defaultVariants},
+	"footnote":       {newMarkdown: newTestMarkdownFootnote, variants: proseWrapVariants},
+	"deflist":        {newMarkdown: newTestMarkdownDefList, variants: defaultVariants},
+	"wikilink":       {newMarkdown: newTestMarkdownWikiLink, variants: defaultVariants},
 }
 
 func TestGolden(t *testing.T) {

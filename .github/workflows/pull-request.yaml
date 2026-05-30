@@ -15,28 +15,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v6.4.0
         with:
           go-version-file: go.mod
 
       - name: Format
         id: fmt
-        run: make fmt
+        run: go run ./cmd/scripts fmt
 
       - name: Vet
         id: vet
-        run: make vet
+        run: go run ./cmd/scripts vet
 
       - name: Build
         id: build
-        run: make build
+        run: go run ./cmd/scripts build
 
       - name: Test
         id: test
-        run: make test
+        run: go run ./cmd/scripts test
 
   validate-version:
     name: Validate Version
@@ -51,13 +51,13 @@ jobs:
       commit_count: ${{ steps.commits.outputs.count }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
 
       - name: Get PR commits
         id: commits
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             const commits = await github.paginate(
@@ -223,7 +223,7 @@ jobs:
     if: always()
     steps:
       - name: Post PR comment
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             const marker = '<!-- pr-validation-comment -->';

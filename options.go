@@ -55,7 +55,11 @@ func WithSingleQuote(v bool) Option { return withSingleQuote{v} }
 
 type withTabWidth struct{ value int }
 
-func (o withTabWidth) SetPrettierOption(c *Config) { c.TabWidth = o.value }
+func (o withTabWidth) SetPrettierOption(c *Config) {
+	if o.value > 0 {
+		c.TabWidth = o.value
+	}
+}
 
 // WithTabWidth sets the tab width used for list alignment.
 func WithTabWidth(v int) Option { return withTabWidth{v} }
