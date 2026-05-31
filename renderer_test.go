@@ -430,13 +430,13 @@ func TestProseWrapAlwaysCJK(t *testing.T) {
 	}
 }
 
-func TestProseWrapAlwaysSetext(t *testing.T) {
+func TestProseWrapAlwaysSetextToATX(t *testing.T) {
 	md := newTestMarkdown(
 		prettier.WithProseWrap(prettier.ProseWrapAlways),
 		prettier.WithPrintWidth(25),
 	)
 	got := render(t, md, "this is a long setext heading\n===")
-	want := "this is a long setext\nheading\n===\n"
+	want := "# this is a long setext heading\n"
 	if got != want {
 		t.Errorf("got:  %q\nwant: %q", got, want)
 	}

@@ -77,13 +77,11 @@ GFM node types are registered in `RegisterFuncs` alongside core nodes:
 
 Table rendering requires a two-pass approach: first collect all cell content and measure widths, then format with column padding. This means the table renderer must skip the default walk for its children and handle them manually.
 
-### Setext Heading Detection
+### Heading Formatting
 
-Goldmark doesn't distinguish ATX from setext headings in the AST — both are `ast.Heading`. We need to detect setext to preserve them (matching prettier).
-
-**Approach:** For headings at level 1-2, look at the source immediately after the last content line's segment. If the very next line (after skipping a single newline and any blockquote markers/spaces) consists entirely of `=` or `-` characters, it's setext.
-
-The underline itself is NOT stored in the heading node — it was consumed by the parser. To preserve it, we read it from the source using the segment positions.
+Goldmark parses ATX and setext headings as `ast.Heading`. The renderer always
+prints ATX headings to match Prettier, so setext underline source text is not
+preserved.
 
 ### Emphasis Marker Selection
 
@@ -99,7 +97,8 @@ Prettier's emphasis marker logic requires knowledge of surrounding context (adja
 
 ### List Marker Alternation
 
-Prettier alternates list markers between **consecutive sibling lists**, NOT by nesting depth. Nested lists inherit their parent's marker style:
+Prettier alternates unordered list markers between **consecutive source marker
+runs**, NOT by nesting depth. Nested lists inherit their parent's marker style:
 
 ```
 - top level
@@ -108,10 +107,14 @@ Prettier alternates list markers between **consecutive sibling lists**, NOT by n
 
 - list 1 (even sibling index = dash)
 
-* list 2 (odd sibling index = asterisk)
+* list 2 (odd source marker run = asterisk)
 ```
 
-We track the "nth sibling index" — counting consecutive same-type lists among the parent's children. Even indices use `-`/`.`, odd use `*`/`)`.
+For unordered lists, we track the source marker run because goldmark may expose
+blank-separated same-marker lists as sibling nodes where Prettier's mdast keeps
+them in one list. Even unordered runs use `-`; odd unordered runs use `*`. For
+ordered lists, we track same-type sibling index for `.`/`)` delimiter
+alternation.
 
 **Prettier source:** `print/list.js`
 
@@ -195,7 +198,7 @@ All render functions live in `renderer.go` organized by section:
 
 - [x] Document (trailing newline)
 - [x] Paragraph (block separator, blockquote paragraph handling)
-- [x] Heading (ATX default, setext preservation with underline from source)
+- [x] Heading (ATX output, including setext input)
 - [x] Blockquote (`> ` prefix, nesting, multiple paragraphs)
 - [x] Fenced code block (backtick counting, full info string)
 - [x] Indented code block (4-space prefix)

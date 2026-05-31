@@ -171,6 +171,7 @@ Project tasks are defined in `cmd/scripts`.
 go run ./cmd/scripts ci
 go run ./cmd/scripts test
 go run ./cmd/scripts test -run TestProseWrapAlways
+go run ./cmd/scripts prettier-parity
 ```
 
 Run `go run ./cmd/scripts help` for all targets.

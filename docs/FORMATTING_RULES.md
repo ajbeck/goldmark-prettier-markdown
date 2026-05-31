@@ -10,23 +10,17 @@ Each rule references the prettier source file it was extracted from.
 
 **Source:** `print/heading.js`, `print/mdast.js`
 
-### ATX Headings (Default)
+### ATX Headings
 
 - Always use `#` prefix style: `# H1`, `## H2`, ... `###### H6`
 - Always exactly one space between `#` markers and content
 - No closing `#` markers
-
-### Setext Headings (Preserved)
-
-- If the original source uses setext style (content and underline on different lines), preserve it
-- The underline (`===` or `---`) is preserved verbatim from the original source
-- Detection: heading start line != heading end line in original source
+- Normalize setext headings to ATX headings
 
 ```markdown
 # ATX heading
 
-Setext heading
-==============
+# Setext heading
 ```
 
 ---
@@ -135,12 +129,13 @@ Internal `*` or `_` characters that could open or close emphasis per CommonMark 
 
 ### Unordered Lists
 
-- **Marker alternation between consecutive sibling lists** (NOT by nesting):
-  - Even-indexed sibling lists: `-`
-  - Odd-indexed sibling lists: `*`
-- The "nth sibling index" counts consecutive lists of the same ordered/unordered type among parent's children
+- **Marker alternation between consecutive source marker runs** (NOT by nesting):
+  - Even-indexed source marker runs: `-`
+  - Odd-indexed source marker runs: `*`
+- Consecutive same-marker unordered lists stay in the same run; changing the
+  source marker (`-`, `*`, or `+`) starts the next run
 - Nested lists inherit the marker from their sibling index context (typically 0 → `-`)
-- All marker types (`-`, `*`, `+`) normalized — `+` becomes `-`
+- All marker types (`-`, `*`, `+`) normalize to `-` or `*`
 
 ```markdown
 - item 1
@@ -149,7 +144,7 @@ Internal `*` or `_` characters that could open or close emphasis per CommonMark 
 
 - first list (index 0 = dash)
 
-* second consecutive list (index 1 = asterisk)
+* second source marker run (index 1 = asterisk)
 ```
 
 ### Ordered Lists
@@ -372,7 +367,7 @@ In these contexts, all newlines must become spaces (no line breaks allowed):
 - Table cells
 - Links
 - Wiki links
-- ATX headings (non-setext)
+- ATX headings
 
 ---
 
@@ -402,7 +397,7 @@ In these contexts, all newlines must become spaces (no line breaks allowed):
 
 - Reference: `[^label]`
 - Definition: `[^label]: content`
-- Inline when: single paragraph child, fits on one line
+- Inline when: single paragraph child or simple blockquote child fits on one line
 - Multi-line: content indented with 4-space alignment
 
 ---

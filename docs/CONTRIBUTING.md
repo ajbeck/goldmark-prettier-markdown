@@ -33,7 +33,7 @@ All markdown formatting logic lives under `src/language-markdown/`:
 | `print/whitespace.js` | `isBreakable()`, `lineBreakCanBeConvertedToSpace()`, `SINGLE_LINE_NODE_TYPES` — controls where line breaks can be inserted or converted to spaces | proseWrap behavior, CJK handling |
 | `print/sentence.js` | `printSentence()` using `fill()` — how prose content is wrapped | proseWrap "always" mode |
 | `print/word.js` | Emphasis marker selection, delimiter escaping, word-level formatting | Emphasis `_` vs `*` decisions, escaping `*`/`_` in content |
-| `print/heading.js` | ATX vs setext heading detection and rendering | Heading formatting |
+| `print/heading.js` | Heading rendering and ATX normalization | Heading formatting |
 | `print/list.js` | List marker alternation, ordered list numbering, alignment | List rendering |
 | `print/table.js` | Table column width measurement, alignment, compact mode | GFM table formatting |
 | `print/preprocess.js` | AST preprocessing — splits text into sentences/words, detects wiki link boundaries | Understanding how prettier's AST differs from what we receive from goldmark |
@@ -181,7 +181,7 @@ When our output doesn't match prettier's:
 3. **Read the prettier source for that node type.** Start at `print/mdast.js` and trace through any helper functions it calls.
 
 4. **Check if it's an AST difference.** Prettier uses mdast, we use goldmark. Some differences:
-   - Goldmark's `ast.Heading` doesn't distinguish ATX from setext — we detect via source inspection
+   - Goldmark's `ast.Heading` doesn't distinguish ATX from setext; we normalize both to ATX
    - Goldmark's `FootnoteLink` has `Index` but not the ref label — we build a map from `FootnoteList`
    - Goldmark's AST transformer adds `FootnoteBacklink` nodes we need to skip
    - Goldmark's emphasis doesn't store the original marker character — we infer from source
@@ -246,7 +246,13 @@ go run ./cmd/scripts test ./... -count=1
 
 # Full validation
 go run ./cmd/scripts ci
+
+# Compare fixtures with Prettier
+go run ./cmd/scripts prettier-parity
 ```
+
+See [PRETTIER_PARITY.md](PRETTIER_PARITY.md) for the parity process, current
+known gaps, and the exact Prettier command used for comparison.
 
 ## Commit Convention
 

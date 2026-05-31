@@ -20,6 +20,7 @@ This repository is a Go module for `github.com/ajbeck/goldmark-prettier-markdown
 - `go run ./cmd/scripts build`: runs `go build ./...`.
 - `go run ./cmd/scripts ci`: runs formatting, vetting, tests, and build validation.
 - `go run ./cmd/scripts clean`: removes leftover `.stamps/` cache files from the previous workflow.
+- `go run ./cmd/scripts prettier-parity`: compares golden fixtures with current Prettier Markdown output.
 
 Run `go run ./cmd/scripts help` to list targets and examples.
 
@@ -41,4 +42,4 @@ Releases are tag-first. Push an immutable semver tag such as `v0.1.0`; the relea
 
 ## Agent-Specific Instructions
 
-Prettier is the source of truth for formatting decisions. When behavior is unclear, compare against Prettier Markdown fixtures before changing renderer logic. Keep edits scoped, preserve existing fixtures unless intentionally updating expected output, and do not rewrite unrelated formatting rules while fixing a single node type.
+Prettier is the source of truth for formatting decisions. When behavior is unclear, compare against Prettier Markdown fixtures before changing renderer logic. Use `docs/PRETTIER_PARITY.md` and `go run ./cmd/scripts prettier-parity` when changing formatting behavior. Keep edits scoped, preserve existing fixtures unless intentionally updating expected output, and do not rewrite unrelated formatting rules while fixing a single node type.

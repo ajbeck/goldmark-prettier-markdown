@@ -1,5 +1,5 @@
 Term
 
-:   First paragraph.
+: First paragraph.
 
     Second paragraph.

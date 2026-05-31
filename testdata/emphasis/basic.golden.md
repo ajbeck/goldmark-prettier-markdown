@@ -6,4 +6,4 @@ _hello_
 
 **hello**
 
-_**bold and italic**_
+**_bold and italic_**
