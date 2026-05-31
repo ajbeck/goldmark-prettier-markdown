@@ -1,2 +1,2 @@
 Apple
-:   A fruit.
+: A fruit.

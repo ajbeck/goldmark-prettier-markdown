@@ -1,3 +1,3 @@
 Apple
-:   A fruit.
-:   A company.
+: A fruit.
+: A company.

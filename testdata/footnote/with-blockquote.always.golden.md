@@ -1,4 +1,3 @@
 Text[^fn].
 
-[^fn]:
-    > quoted text
+[^fn]: > quoted text

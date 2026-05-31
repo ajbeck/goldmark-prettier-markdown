@@ -1,7 +1,7 @@
 Apple
 
-:   A fruit.
+: A fruit.
 
 Orange
 
-:   Another fruit.
+: Another fruit.

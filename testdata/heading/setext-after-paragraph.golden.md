@@ -1,4 +1,3 @@
 Paragraph.
 
-Setext
-======
+# Setext

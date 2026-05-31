@@ -244,98 +244,16 @@ func (r *Renderer) renderHeading(w util.BufWriter, source []byte, node ast.Node,
 		return status, nil
 	}
 	n := node.(*ast.Heading)
-	isSetext := r.isSetextHeading(n)
 	if entering {
 		r.writeBlockSeparator(node)
-		if isSetext {
-			if r.rc.config.ProseWrap == ProseWrapAlways {
-				r.beginFillWrap()
-			}
-			return r.renderSetextHeadingEnter(n)
-		}
 		r.rc.w.WriteBytes(bytes.Repeat([]byte("#"), n.Level))
 		if n.HasChildren() {
 			r.rc.w.WriteBytes([]byte(" "))
 		}
 	} else {
-		if isSetext {
-			if r.rc.config.ProseWrap == ProseWrapAlways {
-				r.endFillWrap()
-			}
-			r.renderSetextHeadingExit(n)
-		}
 		r.rc.w.FlushLine()
 	}
 	return ast.WalkContinue, nil
-}
-
-func (r *Renderer) isSetextHeading(n *ast.Heading) bool {
-	if n.Level > 2 || n.Lines().Len() == 0 {
-		return false
-	}
-	// Check if an underline ('=' or '-') follows the last content line in the
-	// source. This is the definitive signal that goldmark parsed it as setext.
-	lastSeg := n.Lines().At(n.Lines().Len() - 1)
-	pos := lastSeg.Stop
-	// Must have exactly one newline (possibly with \r) — no blank lines allowed.
-	if pos < len(r.rc.source) && r.rc.source[pos] == '\r' {
-		pos++
-	}
-	if pos >= len(r.rc.source) || r.rc.source[pos] != '\n' {
-		return false
-	}
-	pos++ // skip the single newline
-	// Skip blockquote markers and leading spaces on the underline.
-	for pos < len(r.rc.source) && (r.rc.source[pos] == '>' || r.rc.source[pos] == ' ') {
-		pos++
-	}
-	if pos >= len(r.rc.source) {
-		return false
-	}
-	// The underline character must match the heading level and the rest of the
-	// line must contain only that character (plus optional trailing whitespace).
-	ch := r.rc.source[pos]
-	if !((n.Level == 1 && ch == '=') || (n.Level == 2 && ch == '-')) {
-		return false
-	}
-	for pos < len(r.rc.source) && r.rc.source[pos] == ch {
-		pos++
-	}
-	// Remaining characters on the line must be whitespace or EOL.
-	for pos < len(r.rc.source) && r.rc.source[pos] == ' ' {
-		pos++
-	}
-	return pos >= len(r.rc.source) || r.rc.source[pos] == '\n' || r.rc.source[pos] == '\r'
-}
-
-func (r *Renderer) renderSetextHeadingEnter(n *ast.Heading) (ast.WalkStatus, error) {
-	// Setext heading content is rendered by child inline nodes — just continue.
-	return ast.WalkContinue, nil
-}
-
-func (r *Renderer) renderSetextHeadingExit(n *ast.Heading) {
-	// Find the underline in the source after the last content line.
-	lastSeg := n.Lines().At(n.Lines().Len() - 1)
-	pos := lastSeg.Stop
-	// Skip past newline/CR after content.
-	for pos < len(r.rc.source) && (r.rc.source[pos] == '\n' || r.rc.source[pos] == '\r') {
-		pos++
-	}
-	// Skip blockquote markers and leading whitespace on the underline.
-	for pos < len(r.rc.source) && (r.rc.source[pos] == '>' || r.rc.source[pos] == ' ') {
-		pos++
-	}
-	// Read the underline characters ('=' or '-').
-	underlineStart := pos
-	if pos < len(r.rc.source) {
-		ch := r.rc.source[pos]
-		for pos < len(r.rc.source) && r.rc.source[pos] == ch {
-			pos++
-		}
-	}
-	underline := r.rc.source[underlineStart:pos]
-	r.rc.w.WriteBytes([]byte("\n"))
-	r.rc.w.WriteBytes(underline)
 }
 
 func (r *Renderer) renderBlockquote(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -398,7 +316,11 @@ func (r *Renderer) renderFencedCodeBlock(w util.BufWriter, source []byte, node a
 			r.rc.w.WriteBytes(info.Value(source))
 		}
 		r.rc.w.EndLine()
-		r.renderLines(node)
+		if n.Lines().Len() == 0 {
+			r.rc.w.EndLine()
+		} else {
+			r.renderLines(node)
+		}
 		r.rc.w.WriteBytes([]byte(fence))
 	} else {
 		r.rc.w.FlushLine()
@@ -452,10 +374,10 @@ func (r *Renderer) renderListItem(w util.BufWriter, source []byte, node ast.Node
 	if entering {
 		r.writeBlockSeparator(node)
 		lc := &r.rc.listStack[len(r.rc.listStack)-1]
-		nthIdx := nthListSiblingIndex(lc.list, node.Parent())
 
 		var prefix []byte
 		if lc.list.IsOrdered() {
+			nthIdx := nthListSiblingIndex(lc.list, node.Parent())
 			delim := byte('.')
 			if nthIdx%2 != 0 {
 				delim = ')'
@@ -474,6 +396,7 @@ func (r *Renderer) renderListItem(w util.BufWriter, source []byte, node ast.Node
 				prefix = alignListPrefix(prefix, r.rc.config.TabWidth)
 			}
 		} else {
+			nthIdx := nthUnorderedListItemMarkerRunIndex(lc.list, node, source)
 			marker := byte('-')
 			if nthIdx%2 != 0 {
 				marker = '*'
@@ -639,6 +562,17 @@ func (r *Renderer) renderString(w util.BufWriter, source []byte, node ast.Node, 
 
 func (r *Renderer) renderEmphasis(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	n := node.(*ast.Emphasis)
+	if r.isCombinedEmphasisOuter(n, source) {
+		if entering {
+			r.rc.w.WriteBytes([]byte("**_"))
+		} else {
+			r.rc.w.WriteBytes([]byte("_**"))
+		}
+		return ast.WalkContinue, nil
+	}
+	if r.isCombinedEmphasisInner(n, source) {
+		return ast.WalkContinue, nil
+	}
 	if n.Level == 2 {
 		r.rc.w.WriteBytes([]byte("**"))
 	} else {
@@ -646,6 +580,26 @@ func (r *Renderer) renderEmphasis(w util.BufWriter, source []byte, node ast.Node
 		r.rc.w.WriteBytes([]byte{marker})
 	}
 	return ast.WalkContinue, nil
+}
+
+func (r *Renderer) isCombinedEmphasisOuter(n *ast.Emphasis, source []byte) bool {
+	if n.Level != 1 {
+		return false
+	}
+	if source != nil && hasAdjacentWordWithoutPunctuation(n, source) {
+		return false
+	}
+	child := n.FirstChild()
+	if child == nil || child.NextSibling() != nil {
+		return false
+	}
+	childEmphasis, ok := child.(*ast.Emphasis)
+	return ok && childEmphasis.Level == 2
+}
+
+func (r *Renderer) isCombinedEmphasisInner(n *ast.Emphasis, source []byte) bool {
+	parent, ok := n.Parent().(*ast.Emphasis)
+	return ok && n.Level == 2 && r.isCombinedEmphasisOuter(parent, source)
 }
 
 // emphasisMarker returns '_' or '*' for a level-1 emphasis node, applying
@@ -1430,6 +1384,16 @@ func (r *Renderer) renderFootnote(w util.BufWriter, source []byte, node ast.Node
 		r.rc.w.WriteBytes(ref)
 		r.rc.w.WriteBytes([]byte("]"))
 
+		first := fn.FirstChild()
+		if r.canInlineFirstChild(fn) && first != nil && first.Kind() == ast.KindBlockquote {
+			r.rc.w.WriteBytes([]byte(": > "))
+			if err := r.renderInlineChildren(first.FirstChild(), source); err != nil {
+				return ast.WalkStop, err
+			}
+			r.rc.w.FlushLine()
+			return ast.WalkSkipChildren, nil
+		}
+
 		if r.shouldInlineFootnote(fn) {
 			// Inline form: [^ref]: content (always fits, no block fallback).
 			r.rc.w.WriteBytes([]byte(": "))
@@ -1445,12 +1409,50 @@ func (r *Renderer) renderFootnote(w util.BufWriter, source []byte, node ast.Node
 			r.rc.w.PushPrefix([]byte("    "))
 		}
 	} else {
+		first := fn.FirstChild()
+		if r.canInlineFirstChild(fn) && first != nil && first.Kind() == ast.KindBlockquote {
+			return ast.WalkContinue, nil
+		}
 		if !r.shouldInlineFootnote(fn) {
 			r.rc.w.PopPrefix()
 		}
 		r.rc.w.FlushLine()
 	}
 	return ast.WalkContinue, nil
+}
+
+func (r *Renderer) renderInlineChildren(node ast.Node, source []byte) error {
+	for c := node.FirstChild(); c != nil; c = c.NextSibling() {
+		if err := ast.Walk(c, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+			switch n.Kind() {
+			case ast.KindText:
+				return r.renderText(r.rc.w, source, n, entering)
+			case ast.KindString:
+				return r.renderString(r.rc.w, source, n, entering)
+			case ast.KindEmphasis:
+				return r.renderEmphasis(r.rc.w, source, n, entering)
+			case ast.KindCodeSpan:
+				return r.renderCodeSpan(r.rc.w, source, n, entering)
+			case ast.KindLink:
+				return r.renderLink(r.rc.w, source, n, entering)
+			case ast.KindImage:
+				return r.renderImage(r.rc.w, source, n, entering)
+			case ast.KindAutoLink:
+				return r.renderAutoLink(r.rc.w, source, n, entering)
+			case ast.KindRawHTML:
+				return r.renderRawHTML(r.rc.w, source, n, entering)
+			case east.KindStrikethrough:
+				return r.renderStrikethrough(r.rc.w, source, n, entering)
+			case east.KindFootnoteBacklink:
+				return ast.WalkSkipChildren, nil
+			default:
+				return ast.WalkContinue, nil
+			}
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // shouldInlineFootnote returns true when the footnote should always be rendered
@@ -1488,20 +1490,43 @@ func isSingleLineParagraph(para ast.Node, source []byte) bool {
 // prettier's group([softline, first_child]) behavior.
 func (r *Renderer) canInlineFirstChild(fn *east.Footnote) bool {
 	first := fn.FirstChild()
-	if first == nil || first.Kind() != ast.KindParagraph {
+	if first == nil {
 		return false
 	}
-	// In preserve mode, multi-line paragraphs can't be inlined because
-	// we'd need to preserve the line breaks.
-	if r.rc.config.ProseWrap == ProseWrapPreserve && !isSingleLineParagraph(first, r.rc.source) {
+	var contentWidth int
+	switch first.Kind() {
+	case ast.KindParagraph:
+		// In preserve mode, multi-line paragraphs can't be inlined because
+		// we'd need to preserve the line breaks.
+		if r.rc.config.ProseWrap == ProseWrapPreserve && !isSingleLineParagraph(first, r.rc.source) {
+			return false
+		}
+		contentWidth = r.estimateParagraphFlatWidth(first)
+	case ast.KindBlockquote:
+		width, ok := r.estimateFootnoteBlockquoteFlatWidth(first)
+		if !ok {
+			return false
+		}
+		contentWidth = width
+	default:
 		return false
 	}
 	if r.rc.config.PrintWidth <= 0 {
 		return true // unlimited width
 	}
 	prefixLen := len("[^") + len(fn.Ref) + len("]: ")
-	contentWidth := r.estimateParagraphFlatWidth(first)
 	return prefixLen+contentWidth <= r.rc.config.PrintWidth
+}
+
+func (r *Renderer) estimateFootnoteBlockquoteFlatWidth(blockquote ast.Node) (int, bool) {
+	if blockquote.ChildCount() != 1 || blockquote.FirstChild().Kind() != ast.KindParagraph {
+		return 0, false
+	}
+	paragraph := blockquote.FirstChild()
+	if r.rc.config.ProseWrap == ProseWrapPreserve && !isSingleLineParagraph(paragraph, r.rc.source) {
+		return 0, false
+	}
+	return len("> ") + r.estimateParagraphFlatWidth(paragraph), true
 }
 
 // estimateParagraphFlatWidth estimates the display width of a paragraph if
@@ -1605,8 +1630,8 @@ func (r *Renderer) renderDefinitionDescription(w util.BufWriter, source []byte, 
 		if !dd.IsTight && node.HasBlankPreviousLines() {
 			r.rc.w.EndLine()
 		}
-		// ":   " on the first line, "    " continuation on subsequent lines.
-		r.rc.w.PushPrefix([]byte(":   "), 0, 0)
+		// ": " on the first line, "    " continuation on subsequent lines.
+		r.rc.w.PushPrefix([]byte(": "), 0, 0)
 		r.rc.w.PushPrefix([]byte("    "), 1)
 	} else {
 		r.rc.w.PopPrefix()
@@ -2212,6 +2237,74 @@ func nthListSiblingIndex(list *ast.List, parent ast.Node) int {
 	return 0
 }
 
+func nthUnorderedListMarkerRunIndex(list *ast.List, parent ast.Node, source []byte) int {
+	if parent == nil {
+		return 0
+	}
+	idx := -1
+	var currentMarker byte
+	for c := parent.FirstChild(); c != nil; c = c.NextSibling() {
+		l, ok := c.(*ast.List)
+		if !ok || l.IsOrdered() {
+			idx = -1
+			currentMarker = 0
+			continue
+		}
+		marker := sourceUnorderedListMarker(l, source)
+		if idx < 0 || marker != currentMarker {
+			idx++
+			currentMarker = marker
+		}
+		if c == list {
+			return idx
+		}
+	}
+	return 0
+}
+
+func nthUnorderedListItemMarkerRunIndex(list *ast.List, item ast.Node, source []byte) int {
+	idx := nthUnorderedListMarkerRunIndex(list, list.Parent(), source)
+	var currentMarker byte
+	for c := list.FirstChild(); c != nil; c = c.NextSibling() {
+		marker := sourceUnorderedListItemMarker(c, source)
+		if currentMarker == 0 {
+			currentMarker = marker
+		} else if marker != currentMarker {
+			idx++
+			currentMarker = marker
+		}
+		if c == item {
+			return idx
+		}
+	}
+	return idx
+}
+
+func sourceUnorderedListMarker(list *ast.List, source []byte) byte {
+	if list == nil || list.IsOrdered() {
+		return 0
+	}
+	return sourceUnorderedListItemMarker(list.FirstChild(), source)
+}
+
+func sourceUnorderedListItemMarker(item ast.Node, source []byte) byte {
+	lineStart := sourceListItemLineStart(item, source)
+	if lineStart < 0 {
+		return 0
+	}
+	for pos := lineStart; pos < len(source); pos++ {
+		switch source[pos] {
+		case ' ', '\t', '>':
+			continue
+		case '-', '*', '+':
+			return source[pos]
+		default:
+			return 0
+		}
+	}
+	return 0
+}
+
 // isGitDiffFriendlyOrderedList detects ordered lists that use the pattern
 // "0. 1. 1. ..." or "N. 1. 1. ..." for cleaner git diffs. The key signal
 // is that the second item's number is 1 in the source.
@@ -2241,25 +2334,9 @@ func sourceListItemNumber(item ast.Node, source []byte) int {
 	if item == nil {
 		return -1
 	}
-	// Find the start of the list item in the source by looking at its first
-	// child's lines or the item's own position.
-	lines := item.Lines()
-	var start int
-	if lines.Len() > 0 {
-		start = lines.At(0).Start
-	} else if item.FirstChild() != nil {
-		childLines := item.FirstChild().Lines()
-		if childLines.Len() > 0 {
-			start = childLines.At(0).Start
-		} else {
-			return -1
-		}
-	} else {
+	start := sourceListItemLineStart(item, source)
+	if start < 0 {
 		return -1
-	}
-	// Scan backwards to find the line start.
-	for start > 0 && source[start-1] != '\n' {
-		start--
 	}
 	// Parse the number from the line.
 	num := 0
@@ -2289,6 +2366,33 @@ func sourceListItemNumber(item ast.Node, source []byte) int {
 		return -1
 	}
 	return num
+}
+
+func sourceListItemLineStart(item ast.Node, source []byte) int {
+	if item == nil {
+		return -1
+	}
+	// Find the start of the list item in the source by looking at its first
+	// child's lines or the item's own position.
+	lines := item.Lines()
+	var start int
+	if lines.Len() > 0 {
+		start = lines.At(0).Start
+	} else if item.FirstChild() != nil {
+		childLines := item.FirstChild().Lines()
+		if childLines.Len() > 0 {
+			start = childLines.At(0).Start
+		} else {
+			return -1
+		}
+	} else {
+		return -1
+	}
+	// Scan backwards to find the line start.
+	for start > 0 && source[start-1] != '\n' {
+		start--
+	}
+	return start
 }
 
 // isAlignedOrderedList determines if an ordered list should have its prefixes
