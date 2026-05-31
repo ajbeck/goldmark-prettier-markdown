@@ -267,15 +267,34 @@ docs: unwrap prose lines in documentation
 
 ## Release Process
 
-This repository uses tag-first Go module releases. To publish a release, run the
-full validation suite and push a semver tag:
+This repository uses tag-first Go module releases. The tag is the release
+source of truth; the GitHub workflow does not create or move tags.
+
+Before tagging, validate the commit locally:
 
 ```bash
 go run ./cmd/scripts ci
+go run ./cmd/scripts prettier-parity
+```
+
+Create and push an immutable Go module semver tag:
+
+```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow runs on pushed `v*.*.*` tags and creates the GitHub Release
-after validation passes. Do not retag an existing version; publish a new patch
-version instead.
+Use normal release tags such as `v0.1.0` and prerelease tags such as
+`v0.1.0-rc.1`. Pushing a matching `v*.*.*` tag starts
+`.github/workflows/release.yaml`.
+
+The release workflow:
+
+1. Checks out the tagged commit.
+2. Validates the tag as Go module semver.
+3. Runs `go run ./cmd/scripts ci`.
+4. Creates a GitHub Release with generated notes.
+5. Marks tags containing `-` as prereleases.
+
+Do not retag an existing version or recreate a release tag. If a release needs a
+fix, publish a new patch version instead.

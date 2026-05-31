@@ -38,7 +38,7 @@ Recent commits use concise conventional prefixes, including `docs:`, `test:`, an
 
 Pull requests should describe the formatting behavior changed, list relevant test coverage, and reference Prettier behavior or fixtures when applicable. For visible Markdown output changes, include before/after examples or fixture names. Update `docs/ARCHITECTURE.md` or `docs/FORMATTING_RULES.md` when changing supported node behavior or formatting rules.
 
-Releases are tag-first. Push an immutable semver tag such as `v0.1.0`; the release workflow validates the tagged commit and creates the GitHub Release. Do not edit or recreate an existing release tag.
+Releases are tag-first. Run `go run ./cmd/scripts ci` and `go run ./cmd/scripts prettier-parity`, then push an immutable semver tag such as `v0.1.0`; the release workflow validates the tagged commit and creates the GitHub Release. Use prerelease tags such as `v0.1.0-rc.1` when needed, and do not edit or recreate an existing release tag.
 
 ## Agent-Specific Instructions
 

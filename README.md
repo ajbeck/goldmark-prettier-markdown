@@ -178,15 +178,19 @@ Run `go run ./cmd/scripts help` for all targets.
 
 ## Releases
 
-Releases are tag-first. Create and push an immutable Go module semver tag:
+Releases are tag-first. After local validation, create and push an immutable Go
+module semver tag:
 
 ```bash
+go run ./cmd/scripts ci
+go run ./cmd/scripts prettier-parity
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
 The release workflow validates the tagged commit, then creates a GitHub Release
-for that tag.
+for that tag. See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full
+release process, including prereleases.
 
 ## License
 
