@@ -47,9 +47,9 @@ exception.
 
 ## Current Audit
 
-Last audit: Prettier 3.8.3 on 2026-05-30.
+Last audit: Prettier 3.9.6 on 2026-08-30.
 
-Status: in sync for supported behavior. The audit checked 141 fixture variants,
+Status: in sync for supported behavior. The audit checked 135 fixture variants,
 found 0 actionable mismatches, and reports 1 documented exception:
 
 - Documented exception: indented code block after an empty list item. Goldmark
