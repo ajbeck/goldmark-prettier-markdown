@@ -10,20 +10,34 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/yuin/goldmark/ast"
-	east "github.com/yuin/goldmark/extension/ast"
-	"github.com/yuin/goldmark/renderer"
-	"github.com/yuin/goldmark/util"
-	"go.abhg.dev/goldmark/wikilink"
+	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/extension"
+	east "github.com/yuin/goldmark/v2/extension/ast"
+	"github.com/yuin/goldmark/v2/renderer"
+	"github.com/yuin/goldmark/v2/text"
+	"github.com/yuin/goldmark/v2/util"
 )
 
 // Renderer renders goldmark AST nodes as prettier-formatted markdown.
 type Renderer struct {
 	config Config
+	helper *renderer.Helper[io.Writer, rendererConfig]
+}
+
+type rendererConfig struct {
+	renderer.Config[io.Writer, rendererConfig]
+}
+
+var _ renderer.Renderer[io.Writer] = (*Renderer)(nil)
+
+var renderRunnerKey = renderer.NewContextKey()
+
+type renderRunner struct {
+	config Config
 	rc     *renderContext
 }
 
-var _ renderer.NodeRenderer = (*Renderer)(nil)
+type runnerHandler func(*renderRunner, util.BufWriter, []byte, ast.Node, bool) (ast.WalkStatus, error)
 
 // NewRenderer returns a new Renderer with the given options.
 func NewRenderer(opts ...Option) *Renderer {
@@ -31,55 +45,74 @@ func NewRenderer(opts ...Option) *Renderer {
 	for _, o := range opts {
 		o.SetPrettierOption(&cfg)
 	}
-	return &Renderer{config: cfg}
+	r := &Renderer{config: cfg}
+	var builder renderer.HelperBuilder[io.Writer, rendererConfig]
+	r.helper = builder.Options(
+		renderer.WithNodeRenderers[io.Writer, rendererConfig](r.nodeRenderers()),
+	).Build()
+	return r
 }
 
-// RegisterFuncs implements renderer.NodeRenderer.
-func (r *Renderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
-	// Block nodes
-	reg.Register(ast.KindDocument, r.renderDocument)
-	reg.Register(ast.KindHeading, r.renderHeading)
-	reg.Register(ast.KindBlockquote, r.renderBlockquote)
-	reg.Register(ast.KindCodeBlock, r.renderCodeBlock)
-	reg.Register(ast.KindFencedCodeBlock, r.renderFencedCodeBlock)
-	reg.Register(ast.KindHTMLBlock, r.renderHTMLBlock)
-	reg.Register(ast.KindList, r.renderList)
-	reg.Register(ast.KindListItem, r.renderListItem)
-	reg.Register(ast.KindParagraph, r.renderParagraph)
-	reg.Register(ast.KindTextBlock, r.renderTextBlock)
-	reg.Register(ast.KindThematicBreak, r.renderThematicBreak)
+// Render renders a parsed Markdown AST.
+func (r *Renderer) Render(w io.Writer, source []byte, node ast.Node, opts ...renderer.RenderOption) error {
+	return r.helper.Render(w, source, node, opts...)
+}
 
-	// Inline nodes
-	reg.Register(ast.KindAutoLink, r.renderAutoLink)
-	reg.Register(ast.KindCodeSpan, r.renderCodeSpan)
-	reg.Register(ast.KindEmphasis, r.renderEmphasis)
-	reg.Register(ast.KindImage, r.renderImage)
-	reg.Register(ast.KindLink, r.renderLink)
-	reg.Register(ast.KindRawHTML, r.renderRawHTML)
-	reg.Register(ast.KindText, r.renderText)
-	reg.Register(ast.KindString, r.renderString)
+// RenderStringSource renders a parsed Markdown AST from a string source.
+func (r *Renderer) RenderStringSource(w io.Writer, source string, node ast.Node, opts ...renderer.RenderOption) error {
+	return r.helper.RenderStringSource(w, source, node, opts...)
+}
 
-	// GFM extension nodes
-	reg.Register(east.KindTable, r.renderTable)
-	reg.Register(east.KindTableHeader, r.renderTableHeader)
-	reg.Register(east.KindTableRow, r.renderTableRow)
-	reg.Register(east.KindTableCell, r.renderTableCell)
-	reg.Register(east.KindStrikethrough, r.renderStrikethrough)
-	reg.Register(east.KindTaskCheckBox, r.renderTaskCheckBox)
+func (r *Renderer) runner(rc renderer.Context) *renderRunner {
+	return rc.ComputeIfAbsent(renderRunnerKey, func() any {
+		return &renderRunner{config: r.config}
+	}).(*renderRunner)
+}
 
-	// Footnote extension nodes
-	reg.Register(east.KindFootnoteList, r.renderFootnoteList)
-	reg.Register(east.KindFootnote, r.renderFootnote)
-	reg.Register(east.KindFootnoteLink, r.renderFootnoteLink)
-	reg.Register(east.KindFootnoteBacklink, r.renderFootnoteBacklink)
+func (r *Renderer) nodeRenderer(handler runnerHandler) renderer.NodeRenderer[io.Writer] {
+	return renderer.NodeRendererFunc(func(_ io.Writer, source []byte, node ast.Node, entering bool, rc renderer.Context) (ast.WalkStatus, error) {
+		runner := r.runner(rc)
+		return handler(runner, runner.rc.w, source, node, entering)
+	})
+}
 
-	// Definition list extension nodes
-	reg.Register(east.KindDefinitionList, r.renderDefinitionList)
-	reg.Register(east.KindDefinitionTerm, r.renderDefinitionTerm)
-	reg.Register(east.KindDefinitionDescription, r.renderDefinitionDescription)
+func (r *Renderer) documentNodeRenderer() renderer.NodeRenderer[io.Writer] {
+	return renderer.NodeRendererFunc(func(w io.Writer, source []byte, node ast.Node, entering bool, rc renderer.Context) (ast.WalkStatus, error) {
+		runner := r.runner(rc)
+		return runner.renderDocument(w, source, node, entering)
+	})
+}
 
-	// Wiki link extension
-	reg.Register(wikilink.Kind, r.renderWikiLink)
+func (r *Renderer) nodeRenderers() map[ast.NodeKind]renderer.NodeRenderer[io.Writer] {
+	return map[ast.NodeKind]renderer.NodeRenderer[io.Writer]{
+		ast.KindDocument:               r.documentNodeRenderer(),
+		ast.KindHeading:                r.nodeRenderer((*renderRunner).renderHeading),
+		ast.KindBlockquote:             r.nodeRenderer((*renderRunner).renderBlockquote),
+		ast.KindCodeBlock:              r.nodeRenderer((*renderRunner).renderCodeBlock),
+		ast.KindHTMLBlock:              r.nodeRenderer((*renderRunner).renderHTMLBlock),
+		ast.KindList:                   r.nodeRenderer((*renderRunner).renderList),
+		ast.KindListItem:               r.nodeRenderer((*renderRunner).renderListItem),
+		ast.KindParagraph:              r.nodeRenderer((*renderRunner).renderParagraph),
+		ast.KindThematicBreak:          r.nodeRenderer((*renderRunner).renderThematicBreak),
+		ast.KindAutoLink:               r.nodeRenderer((*renderRunner).renderAutoLink),
+		ast.KindCodeSpan:               r.nodeRenderer((*renderRunner).renderCodeSpan),
+		ast.KindEmphasis:               r.nodeRenderer((*renderRunner).renderEmphasis),
+		ast.KindStrong:                 r.nodeRenderer((*renderRunner).renderStrong),
+		ast.KindImage:                  r.nodeRenderer((*renderRunner).renderImage),
+		ast.KindLink:                   r.nodeRenderer((*renderRunner).renderLink),
+		ast.KindRawHTML:                r.nodeRenderer((*renderRunner).renderRawHTML),
+		ast.KindText:                   r.nodeRenderer((*renderRunner).renderText),
+		east.KindTable:                 r.nodeRenderer((*renderRunner).renderTable),
+		east.KindTableHeader:           r.nodeRenderer((*renderRunner).renderTableHeader),
+		east.KindTableRow:              r.nodeRenderer((*renderRunner).renderTableRow),
+		east.KindTableCell:             r.nodeRenderer((*renderRunner).renderTableCell),
+		east.KindStrikethrough:         r.nodeRenderer((*renderRunner).renderStrikethrough),
+		east.KindFootnoteDefinition:    r.nodeRenderer((*renderRunner).renderFootnote),
+		east.KindFootnoteReference:     r.nodeRenderer((*renderRunner).renderFootnoteLink),
+		east.KindDefinitionList:        r.nodeRenderer((*renderRunner).renderDefinitionList),
+		east.KindDefinitionTerm:        r.nodeRenderer((*renderRunner).renderDefinitionTerm),
+		east.KindDefinitionDescription: r.nodeRenderer((*renderRunner).renderDefinitionDescription),
+	}
 }
 
 // renderContext carries mutable state during a single Render call.
@@ -107,10 +140,6 @@ type renderContext struct {
 	// singleLineDepth tracks nesting in non-breakable contexts (links).
 	// When > 0, spaces are not marked as breakable during fill-wrap.
 	singleLineDepth int
-
-	// footnoteRefs maps footnote Index to the ref label (e.g., 0 → "hello").
-	// Built by scanning FootnoteList children on document enter.
-	footnoteRefs map[int][]byte
 }
 
 // ignoreRange represents a <!-- prettier-ignore-start --> / <!-- prettier-ignore-end --> pair.
@@ -136,13 +165,29 @@ func newRenderContext(w io.Writer, source []byte, config *Config) *renderContext
 	}
 }
 
+type sourceSegments []text.Segment
+
+func (s sourceSegments) Len() int              { return len(s) }
+func (s sourceSegments) At(i int) text.Segment { return s[i] }
+
+func sourceSegmentsOf(node ast.Node) sourceSegments {
+	if block, ok := node.(ast.BlockNode); ok {
+		return block.Source()
+	}
+	return nil
+}
+
+func hasBlankPreviousLines(node ast.Node) bool {
+	block, ok := node.(ast.BlockNode)
+	return ok && block.HasBlankPreviousLines()
+}
+
 // --- Block node renderers ---
 
-func (r *Renderer) renderDocument(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderDocument(w io.Writer, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if entering {
 		r.rc = newRenderContext(w, source, &r.config)
 		r.scanIgnoreRanges(node)
-		r.scanFootnoteRefs(node)
 	} else {
 		// Trailing newline at end of document.
 		r.rc.w.FlushLine()
@@ -152,7 +197,7 @@ func (r *Renderer) renderDocument(w util.BufWriter, source []byte, node ast.Node
 
 // scanIgnoreRanges scans direct children of the document for
 // prettier-ignore-start/end pairs and populates the render context.
-func (r *Renderer) scanIgnoreRanges(doc ast.Node) {
+func (r *renderRunner) scanIgnoreRanges(doc ast.Node) {
 	var startNode ast.Node
 	var startEnd int // byte offset at end of start comment
 
@@ -201,7 +246,10 @@ func (r *Renderer) scanIgnoreRanges(doc ast.Node) {
 
 // htmlBlockStartOffset returns the byte offset of the first character of an HTML block.
 func htmlBlockStartOffset(node ast.Node) int {
-	lines := node.Lines()
+	lines := sourceSegmentsOf(node)
+	if hb, ok := node.(*ast.HTMLBlock); ok {
+		lines = hb.Value.Segments()
+	}
 	if lines.Len() == 0 {
 		return 0
 	}
@@ -211,17 +259,17 @@ func htmlBlockStartOffset(node ast.Node) int {
 // htmlBlockEndOffset returns the byte offset after the last character of an HTML block,
 // including the closure line if present.
 func htmlBlockEndOffset(node ast.Node) int {
-	if hb, ok := node.(*ast.HTMLBlock); ok && hb.HasClosure() {
-		return hb.ClosureLine.Stop
+	lines := sourceSegmentsOf(node)
+	if hb, ok := node.(*ast.HTMLBlock); ok {
+		lines = hb.Value.Segments()
 	}
-	lines := node.Lines()
 	if lines.Len() == 0 {
 		return 0
 	}
 	return lines.At(lines.Len() - 1).Stop
 }
 
-func (r *Renderer) renderParagraph(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderParagraph(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
@@ -239,24 +287,44 @@ func (r *Renderer) renderParagraph(w util.BufWriter, source []byte, node ast.Nod
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderHeading(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderHeading(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
 	n := node.(*ast.Heading)
 	if entering {
 		r.writeBlockSeparator(node)
-		r.rc.w.WriteBytes(bytes.Repeat([]byte("#"), n.Level))
-		if n.HasChildren() {
-			r.rc.w.WriteBytes([]byte(" "))
+		if n.HeadingKind == ast.HeadingKindATX {
+			r.rc.w.WriteBytes(bytes.Repeat([]byte("#"), n.Level))
+			if n.HasChildren() {
+				r.rc.w.WriteBytes([]byte(" "))
+			}
 		}
 	} else {
 		r.rc.w.FlushLine()
+		if n.HeadingKind == ast.HeadingKindSetext {
+			marker := byte('-')
+			if n.Level == 1 {
+				marker = '='
+			}
+			r.rc.w.WriteBytes(bytes.Repeat([]byte{marker}, setextUnderlineWidth(n, source)))
+			r.rc.w.FlushLine()
+		}
 	}
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderBlockquote(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func setextUnderlineWidth(node *ast.Heading, source []byte) int {
+	width := 3
+	for _, segment := range sourceSegmentsOf(node) {
+		if length := len(bytes.TrimSpace(segment.Bytes(source))); length > width {
+			width = length
+		}
+	}
+	return width
+}
+
+func (r *renderRunner) renderBlockquote(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
@@ -270,10 +338,36 @@ func (r *Renderer) renderBlockquote(w util.BufWriter, source []byte, node ast.No
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderCodeBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderCodeBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
+	n := node.(*ast.CodeBlock)
+	if n.CodeBlockKind == ast.CodeBlockKindFenced {
+		if entering {
+			r.writeBlockSeparator(node)
+
+			content := n.Value.Bytes(source)
+			fenceLen := max(3, maxContinuousCount(string(content), '`')+1)
+			fence := strings.Repeat("`", fenceLen)
+			r.rc.w.WriteBytes([]byte(fence))
+			if !n.Info.IsEmpty() {
+				r.rc.w.WriteBytes(n.Info.Bytes(source))
+			}
+			r.rc.w.EndLine()
+			if len(content) == 0 {
+				r.rc.w.EndLine()
+			} else {
+				r.writeRawBytes(content)
+				r.rc.w.FlushLine()
+			}
+			r.rc.w.WriteBytes([]byte(fence))
+		} else {
+			r.rc.w.FlushLine()
+		}
+		return ast.WalkContinue, nil
+	}
+
 	if entering {
 		r.writeBlockSeparator(node)
 		// Extra blank line when indented code follows a list (prettier: shouldPrePrintTripleHardline).
@@ -282,7 +376,8 @@ func (r *Renderer) renderCodeBlock(w util.BufWriter, source []byte, node ast.Nod
 			r.rc.w.EndLine()
 		}
 		r.rc.w.PushPrefix([]byte("    "))
-		r.renderLines(node)
+		r.writeRawBytes(n.Value.Bytes(source))
+		r.rc.w.FlushLine()
 	} else {
 		r.rc.w.PopPrefix()
 		r.rc.w.FlushLine()
@@ -290,64 +385,22 @@ func (r *Renderer) renderCodeBlock(w util.BufWriter, source []byte, node ast.Nod
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderFencedCodeBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
-	if status, handled := r.handleIgnoredNode(node, entering); handled {
-		return status, nil
-	}
-	n := node.(*ast.FencedCodeBlock)
-	if entering {
-		r.writeBlockSeparator(node)
-
-		// Determine fence length: at least 3, more if content contains backticks.
-		fenceLen := 3
-		lines := n.Lines()
-		for i := range lines.Len() {
-			seg := lines.At(i)
-			line := string(seg.Value(source))
-			if cnt := maxContinuousCount(line, '`'); cnt >= fenceLen {
-				fenceLen = cnt + 1
-			}
-		}
-
-		fence := strings.Repeat("`", fenceLen)
-		r.rc.w.WriteBytes([]byte(fence))
-		if info := n.Info; info != nil {
-			// Info contains the full info string (language + optional metadata).
-			r.rc.w.WriteBytes(info.Value(source))
-		}
-		r.rc.w.EndLine()
-		if n.Lines().Len() == 0 {
-			r.rc.w.EndLine()
-		} else {
-			r.renderLines(node)
-		}
-		r.rc.w.WriteBytes([]byte(fence))
-	} else {
-		r.rc.w.FlushLine()
-	}
-	return ast.WalkContinue, nil
-}
-
-func (r *Renderer) renderHTMLBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderHTMLBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
 	n := node.(*ast.HTMLBlock)
 	if entering {
 		r.writeBlockSeparator(node)
-		r.renderLines(node)
+		r.writeRawBytes(n.Value.Bytes(source))
+		r.rc.w.FlushLine()
 	} else {
-		if n.HasClosure() {
-			cl := n.ClosureLine
-			r.rc.w.WriteBytes(cl.Value(source))
-			r.rc.w.FlushLine()
-		}
 		r.rc.w.FlushLine()
 	}
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderList(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderList(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
@@ -370,7 +423,7 @@ func (r *Renderer) renderList(w util.BufWriter, source []byte, node ast.Node, en
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderListItem(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderListItem(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if entering {
 		r.writeBlockSeparator(node)
 		lc := &r.rc.listStack[len(r.rc.listStack)-1]
@@ -408,6 +461,13 @@ func (r *Renderer) renderListItem(w util.BufWriter, source []byte, node ast.Node
 		r.rc.w.PushPrefix(prefix, 0, 0)
 		// Continuation lines get space padding matching the prefix length.
 		r.rc.w.PushPrefix(bytes.Repeat([]byte{' '}, len(prefix)), 1)
+		if status, isTask := extension.TaskStatusOf(node); isTask {
+			if status == extension.TaskStatusCompleted {
+				r.rc.w.WriteBytes([]byte("[x] "))
+			} else {
+				r.rc.w.WriteBytes([]byte("[ ] "))
+			}
+		}
 	} else {
 		// Empty list items have no children to generate content, so the
 		// marker prefix is never flushed. Force a newline to emit it.
@@ -421,25 +481,7 @@ func (r *Renderer) renderListItem(w util.BufWriter, source []byte, node ast.Node
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderTextBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
-	if status, handled := r.handleIgnoredNode(node, entering); handled {
-		return status, nil
-	}
-	if entering {
-		r.writeBlockSeparator(node)
-		if r.rc.config.ProseWrap == ProseWrapAlways {
-			r.beginFillWrap()
-		}
-	} else {
-		if r.rc.config.ProseWrap == ProseWrapAlways {
-			r.endFillWrap()
-		}
-		r.rc.w.FlushLine()
-	}
-	return ast.WalkContinue, nil
-}
-
-func (r *Renderer) renderThematicBreak(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderThematicBreak(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
@@ -466,12 +508,12 @@ func (r *Renderer) renderThematicBreak(w util.BufWriter, source []byte, node ast
 
 // --- Inline node renderers ---
 
-func (r *Renderer) renderText(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderText(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if !entering {
 		return ast.WalkContinue, nil
 	}
 	n := node.(*ast.Text)
-	text := n.Value(source)
+	text := []byte(n.Value.Value(source))
 
 	// Escape `*` and `_` inside emphasis/strong to prevent ambiguous markdown.
 	if isInsideEmphasisOrStrong(node) {
@@ -503,7 +545,7 @@ func (r *Renderer) renderText(w util.BufWriter, source []byte, node ast.Node, en
 
 // writeSoftLineBreakNever converts a soft line break to a space (or empty
 // for CJ-to-CJ transitions) when proseWrap is "never".
-func (r *Renderer) writeSoftLineBreakNever(text []byte, n *ast.Text) {
+func (r *renderRunner) writeSoftLineBreakNever(text []byte, n *ast.Text) {
 	// Get the last rune of the current text.
 	preceding, _ := utf8.DecodeLastRune(text)
 
@@ -511,7 +553,7 @@ func (r *Renderer) writeSoftLineBreakNever(text []byte, n *ast.Text) {
 	var following rune
 	if next := n.NextSibling(); next != nil {
 		if nextText, ok := next.(*ast.Text); ok {
-			following, _ = utf8.DecodeRune(nextText.Value(r.rc.source))
+			following, _ = utf8.DecodeRune([]byte(nextText.Value.Value(r.rc.source)))
 		}
 	}
 
@@ -524,14 +566,14 @@ func (r *Renderer) writeSoftLineBreakNever(text []byte, n *ast.Text) {
 // writeSoftLineBreakAlways converts a soft line break to a breakable space
 // (sentinel) or non-breakable space/empty based on CJK context and syntax
 // safety.
-func (r *Renderer) writeSoftLineBreakAlways(text []byte, n *ast.Text) {
+func (r *renderRunner) writeSoftLineBreakAlways(text []byte, n *ast.Text) {
 	preceding, _ := utf8.DecodeLastRune(text)
 
 	var following rune
 	var nextFirstWord string
 	if next := n.NextSibling(); next != nil {
 		if nextText, ok := next.(*ast.Text); ok {
-			nextVal := nextText.Value(r.rc.source)
+			nextVal := []byte(nextText.Value.Value(r.rc.source))
 			following, _ = utf8.DecodeRune(nextVal)
 			// Extract the first word to check syntax safety.
 			nextRunes := []rune(string(nextVal))
@@ -552,59 +594,21 @@ func (r *Renderer) writeSoftLineBreakAlways(text []byte, n *ast.Text) {
 	r.writeBreakableSpace()
 }
 
-func (r *Renderer) renderString(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
-	if entering {
-		n := node.(*ast.String)
-		r.rc.w.WriteBytes(n.Value)
-	}
-	return ast.WalkContinue, nil
-}
-
-func (r *Renderer) renderEmphasis(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderEmphasis(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	n := node.(*ast.Emphasis)
-	if r.isCombinedEmphasisOuter(n, source) {
-		if entering {
-			r.rc.w.WriteBytes([]byte("**_"))
-		} else {
-			r.rc.w.WriteBytes([]byte("_**"))
-		}
-		return ast.WalkContinue, nil
-	}
-	if r.isCombinedEmphasisInner(n, source) {
-		return ast.WalkContinue, nil
-	}
-	if n.Level == 2 {
-		r.rc.w.WriteBytes([]byte("**"))
-	} else {
-		marker := r.emphasisMarker(n, source)
-		r.rc.w.WriteBytes([]byte{marker})
-	}
+	marker := r.emphasisMarker(n, source)
+	r.rc.w.WriteBytes([]byte{marker})
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) isCombinedEmphasisOuter(n *ast.Emphasis, source []byte) bool {
-	if n.Level != 1 {
-		return false
-	}
-	if source != nil && hasAdjacentWordWithoutPunctuation(n, source) {
-		return false
-	}
-	child := n.FirstChild()
-	if child == nil || child.NextSibling() != nil {
-		return false
-	}
-	childEmphasis, ok := child.(*ast.Emphasis)
-	return ok && childEmphasis.Level == 2
-}
-
-func (r *Renderer) isCombinedEmphasisInner(n *ast.Emphasis, source []byte) bool {
-	parent, ok := n.Parent().(*ast.Emphasis)
-	return ok && n.Level == 2 && r.isCombinedEmphasisOuter(parent, source)
+func (r *renderRunner) renderStrong(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	r.rc.w.WriteBytes([]byte("**"))
+	return ast.WalkContinue, nil
 }
 
 // emphasisMarker returns '_' or '*' for a level-1 emphasis node, applying
 // prettier's marker selection rules.
-func (r *Renderer) emphasisMarker(n *ast.Emphasis, source []byte) byte {
+func (r *renderRunner) emphasisMarker(n *ast.Emphasis, source []byte) byte {
 	// Rule 1: if the first child is an autolink, preserve the original marker.
 	if first := n.FirstChild(); first != nil && first.Kind() == ast.KindAutoLink {
 		return r.originalEmphasisMarker(n, source)
@@ -618,7 +622,7 @@ func (r *Renderer) emphasisMarker(n *ast.Emphasis, source []byte) byte {
 
 	// Rule 3: inside a strong that itself has adjacent words.
 	if parent := n.Parent(); parent != nil {
-		if pe, ok := parent.(*ast.Emphasis); ok && pe.Level == 2 {
+		if pe, ok := parent.(*ast.Strong); ok {
 			if hasAdjacentWordWithoutPunctuation(pe, source) {
 				return '*'
 			}
@@ -627,7 +631,7 @@ func (r *Renderer) emphasisMarker(n *ast.Emphasis, source []byte) byte {
 
 	// Rule 4: nested inside another emphasis.
 	for p := n.Parent(); p != nil; p = p.Parent() {
-		if pe, ok := p.(*ast.Emphasis); ok && pe.Level == 1 {
+		if _, ok := p.(*ast.Emphasis); ok {
 			return '*'
 		}
 	}
@@ -637,31 +641,16 @@ func (r *Renderer) emphasisMarker(n *ast.Emphasis, source []byte) byte {
 
 // originalEmphasisMarker reads the marker character from the source for the
 // emphasis node. Falls back to '_'.
-func (r *Renderer) originalEmphasisMarker(n *ast.Emphasis, source []byte) byte {
+func (r *renderRunner) originalEmphasisMarker(n *ast.Emphasis, source []byte) byte {
 	// Walk inline children to find the position in source.
 	if first := n.FirstChild(); first != nil {
 		if t, ok := first.(*ast.Text); ok {
-			seg := t.Segment
+			seg := t.Value.Index()
 			// The emphasis marker is just before the first child's text.
 			if seg.Start > 0 {
 				ch := source[seg.Start-1]
 				if ch == '*' || ch == '_' {
 					return ch
-				}
-			}
-		}
-		// For autolinks, the '<' is the first char; marker is before that.
-		if _, ok := first.(*ast.AutoLink); ok {
-			if first.FirstChild() != nil {
-				if t, ok := first.FirstChild().(*ast.Text); ok {
-					seg := t.Segment
-					// <URL> — the '<' is at seg.Start-1, marker is at seg.Start-2
-					if seg.Start >= 2 {
-						ch := source[seg.Start-2]
-						if ch == '*' || ch == '_' {
-							return ch
-						}
-					}
 				}
 			}
 		}
@@ -691,15 +680,16 @@ func hasAdjacentWordWithoutPunctuation(node ast.Node, source []byte) bool {
 func lastCharOf(node ast.Node, source []byte) (rune, bool) {
 	switch n := node.(type) {
 	case *ast.Text:
-		v := n.Value(source)
+		v := []byte(n.Value.Value(source))
 		if len(v) > 0 {
 			return rune(v[len(v)-1]), true
 		}
-	case *ast.String:
-		if len(n.Value) > 0 {
-			return rune(n.Value[len(n.Value)-1]), true
+	case *ast.CodeSpan:
+		v := n.Value.Bytes(source)
+		if len(v) > 0 {
+			return rune(v[len(v)-1]), true
 		}
-	case *ast.CodeSpan, *ast.Emphasis, *ast.Link, *ast.Image:
+	case *ast.Emphasis, *ast.Strong, *ast.Link, *ast.Image:
 		// Walk to last leaf.
 		for c := node.LastChild(); c != nil; c = c.LastChild() {
 			if r, ok := lastCharOf(c, source); ok {
@@ -714,15 +704,16 @@ func lastCharOf(node ast.Node, source []byte) (rune, bool) {
 func firstCharOf(node ast.Node, source []byte) (rune, bool) {
 	switch n := node.(type) {
 	case *ast.Text:
-		v := n.Value(source)
+		v := []byte(n.Value.Value(source))
 		if len(v) > 0 {
 			return rune(v[0]), true
 		}
-	case *ast.String:
-		if len(n.Value) > 0 {
-			return rune(n.Value[0]), true
+	case *ast.CodeSpan:
+		v := n.Value.Bytes(source)
+		if len(v) > 0 {
+			return rune(v[0]), true
 		}
-	case *ast.CodeSpan, *ast.Emphasis, *ast.Link, *ast.Image:
+	case *ast.Emphasis, *ast.Strong, *ast.Link, *ast.Image:
 		// Walk to first leaf.
 		for c := node.FirstChild(); c != nil; c = c.FirstChild() {
 			if r, ok := firstCharOf(c, source); ok {
@@ -857,10 +848,11 @@ func isASCIIPunctuation(r rune) bool {
 	return r >= '!' && r <= '~' && !isASCIILetterOrDigit(r)
 }
 
-// isInsideEmphasisOrStrong returns true if the node has an Emphasis ancestor.
+// isInsideEmphasisOrStrong returns true if the node has an emphasis ancestor.
 func isInsideEmphasisOrStrong(node ast.Node) bool {
 	for p := node.Parent(); p != nil; p = p.Parent() {
-		if _, ok := p.(*ast.Emphasis); ok {
+		switch p.(type) {
+		case *ast.Emphasis, *ast.Strong:
 			return true
 		}
 	}
@@ -995,15 +987,9 @@ func isUnicodeWhitespace(r rune) bool {
 	return unicode.Is(unicode.Zs, r) || r == '\t' || r == '\n' || r == '\f' || r == '\r'
 }
 
-func (r *Renderer) renderCodeSpan(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderCodeSpan(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if entering {
-		// Collect code span content from children.
-		var content []byte
-		for c := node.FirstChild(); c != nil; c = c.NextSibling() {
-			t := c.(*ast.Text)
-			seg := t.Segment
-			content = append(content, seg.Value(source)...)
-		}
+		content := node.(*ast.CodeSpan).Value.Bytes(source)
 
 		backtickLen := minNotPresentContinuousCount(string(content), '`')
 		ticks := strings.Repeat("`", backtickLen)
@@ -1028,7 +1014,7 @@ func (r *Renderer) renderCodeSpan(w util.BufWriter, source []byte, node ast.Node
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	n := node.(*ast.Link)
 	if entering {
 		if r.inFillWrap() {
@@ -1037,8 +1023,8 @@ func (r *Renderer) renderLink(w util.BufWriter, source []byte, node ast.Node, en
 		r.rc.w.WriteBytes([]byte("["))
 	} else {
 		r.rc.w.WriteBytes([]byte("]("))
-		r.writeURL(n.Destination, ")")
-		r.writeLinkTitle(n.Title)
+		r.writeURL(n.Destination.Bytes(source), ")")
+		r.writeLinkTitle(n.Title.Bytes(source))
 		r.rc.w.WriteBytes([]byte(")"))
 		if r.inFillWrap() {
 			r.rc.singleLineDepth--
@@ -1047,44 +1033,41 @@ func (r *Renderer) renderLink(w util.BufWriter, source []byte, node ast.Node, en
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderImage(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderImage(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	n := node.(*ast.Image)
 	if entering {
 		r.rc.w.WriteBytes([]byte("!["))
 	} else {
 		r.rc.w.WriteBytes([]byte("]("))
-		r.writeURL(n.Destination, ")")
-		r.writeLinkTitle(n.Title)
+		r.writeURL(n.Destination.Bytes(source), ")")
+		r.writeLinkTitle(n.Title.Bytes(source))
 		r.rc.w.WriteBytes([]byte(")"))
 	}
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderAutoLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderAutoLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	n := node.(*ast.AutoLink)
 	if entering {
 		r.rc.w.WriteBytes([]byte("<"))
-		r.rc.w.WriteBytes(n.URL(source))
+		r.rc.w.WriteBytes(n.Destination.Bytes(source))
 	} else {
 		r.rc.w.WriteBytes([]byte(">"))
 	}
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderRawHTML(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderRawHTML(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if entering {
 		n := node.(*ast.RawHTML)
-		for i := range n.Segments.Len() {
-			seg := n.Segments.At(i)
-			r.rc.w.WriteBytes(seg.Value(source))
-		}
+		r.rc.w.WriteBytes(n.Value.Bytes(source))
 	}
 	return ast.WalkContinue, nil
 }
 
 // --- GFM extension node renderers ---
 
-func (r *Renderer) renderTable(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderTable(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
@@ -1092,16 +1075,30 @@ func (r *Renderer) renderTable(w util.BufWriter, source []byte, node ast.Node, e
 		return ast.WalkContinue, nil
 	}
 	r.writeBlockSeparator(node)
-	table := node.(*east.Table)
-
 	// Pass 1: collect cell text and measure column widths.
 	var rows [][]cellInfo
 	var colWidths []int
 
-	for row := node.FirstChild(); row != nil; row = row.NextSibling() {
+	var rowNodes []ast.Node
+	for section := node.FirstChild(); section != nil; section = section.NextSibling() {
+		if section.Kind() == east.KindTableBody {
+			for row := section.FirstChild(); row != nil; row = row.NextSibling() {
+				rowNodes = append(rowNodes, row)
+			}
+			continue
+		}
+		rowNodes = append(rowNodes, section)
+	}
+	var alignments []east.Alignment
+	for _, row := range rowNodes {
 		var rowCells []cellInfo
 		colIdx := 0
 		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
+			if len(rows) == 0 {
+				if tableCell, ok := cell.(*east.TableCell); ok {
+					alignments = append(alignments, tableCell.Alignment)
+				}
+			}
 			text := r.renderCellContent(cell, source)
 			width := len(text) // TODO: proper display width for CJK
 			if colIdx >= len(colWidths) {
@@ -1132,21 +1129,21 @@ func (r *Renderer) renderTable(w util.BufWriter, source []byte, node ast.Node, e
 
 	// Pass 2: format and output.
 	// Header row.
-	r.writeTableRow(rows[0], colWidths, table.Alignments, compact)
+	r.writeTableRow(rows[0], colWidths, alignments, compact)
 
 	// Alignment row.
-	r.writeAlignmentRow(colWidths, table.Alignments, compact)
+	r.writeAlignmentRow(colWidths, alignments, compact)
 
 	// Data rows.
 	for _, row := range rows[1:] {
-		r.writeTableRow(row, colWidths, table.Alignments, compact)
+		r.writeTableRow(row, colWidths, alignments, compact)
 	}
 
 	return ast.WalkSkipChildren, nil
 }
 
 // renderCellContent renders the inline content of a table cell to a string.
-func (r *Renderer) renderCellContent(cell ast.Node, source []byte) string {
+func (r *renderRunner) renderCellContent(cell ast.Node, source []byte) string {
 	var buf bytes.Buffer
 	origWriter := r.rc.w
 	r.rc.w = newMarkdownWriter(&buf)
@@ -1156,28 +1153,16 @@ func (r *Renderer) renderCellContent(cell ast.Node, source []byte) string {
 			switch n := n.(type) {
 			case *ast.Text:
 				if entering {
-					r.rc.w.WriteBytes(n.Value(source))
-				}
-			case *ast.String:
-				if entering {
-					r.rc.w.WriteBytes(n.Value)
+					r.rc.w.WriteBytes([]byte(n.Value.Value(source)))
 				}
 			case *ast.Emphasis:
-				if n.Level == 2 {
-					r.rc.w.WriteBytes([]byte("**"))
-				} else {
-					marker := r.emphasisMarker(n, source)
-					r.rc.w.WriteBytes([]byte{marker})
-				}
+				marker := r.emphasisMarker(n, source)
+				r.rc.w.WriteBytes([]byte{marker})
+			case *ast.Strong:
+				r.rc.w.WriteBytes([]byte("**"))
 			case *ast.CodeSpan:
 				if entering {
-					var content []byte
-					for cc := n.FirstChild(); cc != nil; cc = cc.NextSibling() {
-						if t, ok := cc.(*ast.Text); ok {
-							seg := t.Segment
-							content = append(content, seg.Value(source)...)
-						}
-					}
+					content := n.Value.Bytes(source)
 					// Escape pipes in table cells.
 					content = bytes.ReplaceAll(content, []byte("|"), []byte(`\|`))
 					backtickLen := minNotPresentContinuousCount(string(content), '`')
@@ -1201,8 +1186,8 @@ func (r *Renderer) renderCellContent(cell ast.Node, source []byte) string {
 					r.rc.w.WriteBytes([]byte("["))
 				} else {
 					r.rc.w.WriteBytes([]byte("]("))
-					r.writeURL(n.Destination, ")")
-					r.writeLinkTitle(n.Title)
+					r.writeURL(n.Destination.Bytes(source), ")")
+					r.writeLinkTitle(n.Title.Bytes(source))
 					r.rc.w.WriteBytes([]byte(")"))
 				}
 			case *ast.Image:
@@ -1210,23 +1195,20 @@ func (r *Renderer) renderCellContent(cell ast.Node, source []byte) string {
 					r.rc.w.WriteBytes([]byte("!["))
 				} else {
 					r.rc.w.WriteBytes([]byte("]("))
-					r.writeURL(n.Destination, ")")
-					r.writeLinkTitle(n.Title)
+					r.writeURL(n.Destination.Bytes(source), ")")
+					r.writeLinkTitle(n.Title.Bytes(source))
 					r.rc.w.WriteBytes([]byte(")"))
 				}
 			case *ast.AutoLink:
 				if entering {
 					r.rc.w.WriteBytes([]byte("<"))
-					r.rc.w.WriteBytes(n.URL(source))
+					r.rc.w.WriteBytes(n.Destination.Bytes(source))
 				} else {
 					r.rc.w.WriteBytes([]byte(">"))
 				}
 			case *ast.RawHTML:
 				if entering {
-					for i := range n.Segments.Len() {
-						seg := n.Segments.At(i)
-						r.rc.w.WriteBytes(seg.Value(source))
-					}
+					r.rc.w.WriteBytes(n.Value.Bytes(source))
 				}
 			case *east.Strikethrough:
 				r.rc.w.WriteBytes([]byte("~~"))
@@ -1259,7 +1241,7 @@ func tableRowWidth(colWidths []int) int {
 	return width
 }
 
-func (r *Renderer) writeTableRow(cells []cellInfo, colWidths []int, alignments []east.Alignment, compact bool) {
+func (r *renderRunner) writeTableRow(cells []cellInfo, colWidths []int, alignments []east.Alignment, compact bool) {
 	r.rc.w.WriteBytes([]byte("|"))
 	for i, cell := range cells {
 		if compact {
@@ -1290,7 +1272,7 @@ func (r *Renderer) writeTableRow(cells []cellInfo, colWidths []int, alignments [
 	r.rc.w.EndLine()
 }
 
-func (r *Renderer) writeAlignmentRow(colWidths []int, alignments []east.Alignment, compact bool) {
+func (r *renderRunner) writeAlignmentRow(colWidths []int, alignments []east.Alignment, compact bool) {
 	r.rc.w.WriteBytes([]byte("|"))
 	for i, width := range colWidths {
 		align := east.AlignNone
@@ -1320,66 +1302,30 @@ func (r *Renderer) writeAlignmentRow(colWidths []int, alignments []east.Alignmen
 // renderTableHeader, renderTableRow, renderTableCell are no-ops because
 // renderTable handles all children via WalkSkipChildren + manual walk.
 
-func (r *Renderer) renderTableHeader(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderTableHeader(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderTableRow(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderTableRow(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderTableCell(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderTableCell(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderStrikethrough(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderStrikethrough(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	r.rc.w.WriteBytes([]byte("~~"))
-	return ast.WalkContinue, nil
-}
-
-func (r *Renderer) renderTaskCheckBox(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
-	if !entering {
-		return ast.WalkContinue, nil
-	}
-	n := node.(*east.TaskCheckBox)
-	if n.IsChecked {
-		r.rc.w.WriteBytes([]byte("[x] "))
-	} else {
-		r.rc.w.WriteBytes([]byte("[ ] "))
-	}
 	return ast.WalkContinue, nil
 }
 
 // --- Footnote extension node renderers ---
 
-// scanFootnoteRefs builds the footnoteRefs map from the FootnoteList at the
-// end of the document. This lets renderFootnoteLink look up ref labels by index.
-func (r *Renderer) scanFootnoteRefs(doc ast.Node) {
-	for c := doc.FirstChild(); c != nil; c = c.NextSibling() {
-		if c.Kind() != east.KindFootnoteList {
-			continue
-		}
-		r.rc.footnoteRefs = make(map[int][]byte)
-		for fn := c.FirstChild(); fn != nil; fn = fn.NextSibling() {
-			if f, ok := fn.(*east.Footnote); ok {
-				r.rc.footnoteRefs[f.Index] = f.Ref
-			}
-		}
-	}
-}
-
-func (r *Renderer) renderFootnoteList(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderFootnote(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	fn := node.(*east.FootnoteDefinition)
 	if entering {
 		r.writeBlockSeparator(node)
-	}
-	return ast.WalkContinue, nil
-}
-
-func (r *Renderer) renderFootnote(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
-	fn := node.(*east.Footnote)
-	if entering {
-		r.writeBlockSeparator(node)
-		ref := fn.Ref
+		ref := fn.Label.Bytes(source)
 		r.rc.w.WriteBytes([]byte("[^"))
 		r.rc.w.WriteBytes(ref)
 		r.rc.w.WriteBytes([]byte("]"))
@@ -1421,16 +1367,16 @@ func (r *Renderer) renderFootnote(w util.BufWriter, source []byte, node ast.Node
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderInlineChildren(node ast.Node, source []byte) error {
+func (r *renderRunner) renderInlineChildren(node ast.Node, source []byte) error {
 	for c := node.FirstChild(); c != nil; c = c.NextSibling() {
 		if err := ast.Walk(c, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 			switch n.Kind() {
 			case ast.KindText:
 				return r.renderText(r.rc.w, source, n, entering)
-			case ast.KindString:
-				return r.renderString(r.rc.w, source, n, entering)
 			case ast.KindEmphasis:
 				return r.renderEmphasis(r.rc.w, source, n, entering)
+			case ast.KindStrong:
+				return r.renderStrong(r.rc.w, source, n, entering)
 			case ast.KindCodeSpan:
 				return r.renderCodeSpan(r.rc.w, source, n, entering)
 			case ast.KindLink:
@@ -1443,8 +1389,6 @@ func (r *Renderer) renderInlineChildren(node ast.Node, source []byte) error {
 				return r.renderRawHTML(r.rc.w, source, n, entering)
 			case east.KindStrikethrough:
 				return r.renderStrikethrough(r.rc.w, source, n, entering)
-			case east.KindFootnoteBacklink:
-				return ast.WalkSkipChildren, nil
 			default:
 				return ast.WalkContinue, nil
 			}
@@ -1457,7 +1401,7 @@ func (r *Renderer) renderInlineChildren(node ast.Node, source []byte) error {
 
 // shouldInlineFootnote returns true when the footnote should always be rendered
 // inline (no width check, no block fallback). Matches prettier's logic.
-func (r *Renderer) shouldInlineFootnote(fn *east.Footnote) bool {
+func (r *renderRunner) shouldInlineFootnote(fn *east.FootnoteDefinition) bool {
 	if fn.ChildCount() != 1 {
 		return false
 	}
@@ -1477,7 +1421,7 @@ func (r *Renderer) shouldInlineFootnote(fn *east.Footnote) bool {
 
 // isSingleLineParagraph reports whether a paragraph's source text spans a single line.
 func isSingleLineParagraph(para ast.Node, source []byte) bool {
-	lines := para.Lines()
+	lines := sourceSegmentsOf(para)
 	if lines.Len() <= 1 {
 		return true
 	}
@@ -1488,7 +1432,7 @@ func isSingleLineParagraph(para ast.Node, source []byte) bool {
 // canInlineFirstChild checks if the first child (a paragraph) of a non-inline
 // footnote can be rendered on the same line as [^ref]: . This implements
 // prettier's group([softline, first_child]) behavior.
-func (r *Renderer) canInlineFirstChild(fn *east.Footnote) bool {
+func (r *renderRunner) canInlineFirstChild(fn *east.FootnoteDefinition) bool {
 	first := fn.FirstChild()
 	if first == nil {
 		return false
@@ -1514,11 +1458,11 @@ func (r *Renderer) canInlineFirstChild(fn *east.Footnote) bool {
 	if r.rc.config.PrintWidth <= 0 {
 		return true // unlimited width
 	}
-	prefixLen := len("[^") + len(fn.Ref) + len("]: ")
+	prefixLen := len("[^") + len(fn.Label.Bytes(r.rc.source)) + len("]: ")
 	return prefixLen+contentWidth <= r.rc.config.PrintWidth
 }
 
-func (r *Renderer) estimateFootnoteBlockquoteFlatWidth(blockquote ast.Node) (int, bool) {
+func (r *renderRunner) estimateFootnoteBlockquoteFlatWidth(blockquote ast.Node) (int, bool) {
 	if blockquote.ChildCount() != 1 || blockquote.FirstChild().Kind() != ast.KindParagraph {
 		return 0, false
 	}
@@ -1531,47 +1475,41 @@ func (r *Renderer) estimateFootnoteBlockquoteFlatWidth(blockquote ast.Node) (int
 
 // estimateParagraphFlatWidth estimates the display width of a paragraph if
 // rendered on a single line (all soft breaks → spaces).
-func (r *Renderer) estimateParagraphFlatWidth(para ast.Node) int {
+func (r *renderRunner) estimateParagraphFlatWidth(para ast.Node) int {
 	width := 0
 	for c := para.FirstChild(); c != nil; c = c.NextSibling() {
 		switch n := c.(type) {
 		case *ast.Text:
-			width += displayWidth(string(n.Value(r.rc.source)))
+			width += displayWidth(n.Value.Value(r.rc.source))
 			if n.SoftLineBreak() && c.NextSibling() != nil {
 				width++ // space replacing soft break
 			}
-		case *ast.String:
-			width += displayWidth(string(n.Value))
 		case *ast.CodeSpan:
 			// Rough estimate: backticks + content
-			width += 2 // opening/closing backticks
-			for cc := n.FirstChild(); cc != nil; cc = cc.NextSibling() {
-				if t, ok := cc.(*ast.Text); ok {
-					width += len(t.Value(r.rc.source))
-				}
-			}
+			width += 2 + len(n.Value.Bytes(r.rc.source))
 		case *ast.Emphasis:
-			if n.Level == 2 {
-				width += 4 // ** on each side
-			} else {
-				width += 2 // _ on each side
-			}
+			width += 2 // _ on each side
 			// Add child content width recursively (simplified).
 			for cc := n.FirstChild(); cc != nil; cc = cc.NextSibling() {
 				if t, ok := cc.(*ast.Text); ok {
-					width += displayWidth(string(t.Value(r.rc.source)))
+					width += displayWidth(t.Value.Value(r.rc.source))
+				}
+			}
+		case *ast.Strong:
+			width += 4
+			for cc := n.FirstChild(); cc != nil; cc = cc.NextSibling() {
+				if t, ok := cc.(*ast.Text); ok {
+					width += displayWidth(t.Value.Value(r.rc.source))
 				}
 			}
 		case *ast.Link:
 			width += 4 // []()
-			width += len(n.Destination)
+			width += len(n.Destination.Bytes(r.rc.source))
 			for cc := n.FirstChild(); cc != nil; cc = cc.NextSibling() {
 				if t, ok := cc.(*ast.Text); ok {
-					width += displayWidth(string(t.Value(r.rc.source)))
+					width += displayWidth(t.Value.Value(r.rc.source))
 				}
 			}
-		case *east.FootnoteBacklink:
-			// Skip backlinks entirely — they don't contribute to output.
 		default:
 			// Conservative fallback for unknown inline types.
 			width += 10
@@ -1580,26 +1518,21 @@ func (r *Renderer) estimateParagraphFlatWidth(para ast.Node) int {
 	return width
 }
 
-func (r *Renderer) renderFootnoteLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderFootnoteLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if !entering {
 		return ast.WalkContinue, nil
 	}
-	fn := node.(*east.FootnoteLink)
-	ref := r.rc.footnoteRefs[fn.Index]
+	fn := node.(*east.FootnoteReference)
+	ref := fn.Label.Bytes(source)
 	r.rc.w.WriteBytes([]byte("[^"))
 	r.rc.w.WriteBytes(ref)
 	r.rc.w.WriteBytes([]byte("]"))
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderFootnoteBacklink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
-	// Backlinks are HTML-only artifacts — skip entirely.
-	return ast.WalkSkipChildren, nil
-}
-
 // --- Definition list extension node renderers ---
 
-func (r *Renderer) renderDefinitionList(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderDefinitionList(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if status, handled := r.handleIgnoredNode(node, entering); handled {
 		return status, nil
 	}
@@ -1611,7 +1544,7 @@ func (r *Renderer) renderDefinitionList(w util.BufWriter, source []byte, node as
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderDefinitionTerm(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderDefinitionTerm(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if entering {
 		// Blank line before a term when preceded by a description (visual grouping).
 		if prev := node.PreviousSibling(); prev != nil && prev.Kind() == east.KindDefinitionDescription {
@@ -1623,11 +1556,11 @@ func (r *Renderer) renderDefinitionTerm(w util.BufWriter, source []byte, node as
 	return ast.WalkContinue, nil
 }
 
-func (r *Renderer) renderDefinitionDescription(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *renderRunner) renderDefinitionDescription(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if entering {
 		// Loose definitions have a blank line between term and description.
 		dd := node.(*east.DefinitionDescription)
-		if !dd.IsTight && node.HasBlankPreviousLines() {
+		if !dd.IsTight && hasBlankPreviousLines(node) {
 			r.rc.w.EndLine()
 		}
 		// ": " on the first line, "    " continuation on subsequent lines.
@@ -1641,50 +1574,6 @@ func (r *Renderer) renderDefinitionDescription(w util.BufWriter, source []byte, 
 	return ast.WalkContinue, nil
 }
 
-// --- Wiki link extension node renderer ---
-
-func (r *Renderer) renderWikiLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
-	if !entering {
-		return ast.WalkContinue, nil
-	}
-	wl := node.(*wikilink.Node)
-
-	// Reconstruct the wiki link content from target, fragment, and label.
-	// [[Target]] or [[Target#Fragment]] or [[Target|Label]] or [[Target#Fragment|Label]]
-	var content string
-	content = string(wl.Target)
-	if len(wl.Fragment) > 0 {
-		content += "#" + string(wl.Fragment)
-	}
-
-	// Check if there's a pipe-separated label (child text differs from target+fragment).
-	label := r.wikiLinkChildText(wl, source)
-	targetWithFragment := content
-	if label != targetWithFragment {
-		content += "|" + label
-	}
-
-	if wl.Embed {
-		r.rc.w.WriteBytes([]byte("!"))
-	}
-	r.rc.w.WriteBytes([]byte("[["))
-	r.rc.w.WriteBytes([]byte(content))
-	r.rc.w.WriteBytes([]byte("]]"))
-
-	return ast.WalkSkipChildren, nil
-}
-
-// wikiLinkChildText returns the concatenated text of a wiki link's children.
-func (r *Renderer) wikiLinkChildText(wl *wikilink.Node, source []byte) string {
-	var buf bytes.Buffer
-	for c := wl.FirstChild(); c != nil; c = c.NextSibling() {
-		if t, ok := c.(*ast.Text); ok {
-			buf.Write(t.Value(source))
-		}
-	}
-	return buf.String()
-}
-
 // --- Fill-wrap for proseWrap "always" ---
 
 // fillWrapSentinel is a zero byte used to mark breakable space positions
@@ -1693,7 +1582,7 @@ const fillWrapSentinel = '\x00'
 
 // beginFillWrap starts capturing inline output into a buffer for later
 // fill-wrapping. Call endFillWrap when the block element exits.
-func (r *Renderer) beginFillWrap() {
+func (r *renderRunner) beginFillWrap() {
 	r.rc.fillWrapBuf = new(bytes.Buffer)
 	r.rc.fillWrapWriter = r.rc.w
 	r.rc.w = newMarkdownWriter(r.rc.fillWrapBuf)
@@ -1701,7 +1590,7 @@ func (r *Renderer) beginFillWrap() {
 
 // endFillWrap runs the fill-wrap algorithm on the buffered content and
 // writes the wrapped result to the real writer.
-func (r *Renderer) endFillWrap() {
+func (r *renderRunner) endFillWrap() {
 	r.rc.w.FlushLine()
 	content := r.rc.fillWrapBuf.String()
 	r.rc.w = r.rc.fillWrapWriter
@@ -1720,14 +1609,14 @@ func (r *Renderer) endFillWrap() {
 
 // inFillWrap reports whether inline content is currently being buffered
 // for fill-wrapping.
-func (r *Renderer) inFillWrap() bool {
+func (r *renderRunner) inFillWrap() bool {
 	return r.rc.fillWrapBuf != nil
 }
 
 // writeBreakableSpace writes a space that the fill-wrap algorithm may
 // convert to a newline. In non-fill-wrap mode or non-breakable context,
 // writes a plain space.
-func (r *Renderer) writeBreakableSpace() {
+func (r *renderRunner) writeBreakableSpace() {
 	if r.inFillWrap() && r.rc.singleLineDepth == 0 {
 		r.rc.w.WriteByte(fillWrapSentinel)
 	} else {
@@ -1941,7 +1830,7 @@ func isBreakableSpaceContext(preceding, following rune) bool {
 // prettier-ignore-start/end range. If it is the start comment, the entire
 // range is rendered verbatim from source. If it is any other node in the
 // range, it is skipped. Returns true if the node was handled.
-func (r *Renderer) handleIgnoredNode(node ast.Node, entering bool) (ast.WalkStatus, bool) {
+func (r *renderRunner) handleIgnoredNode(node ast.Node, entering bool) (ast.WalkStatus, bool) {
 	if _, ignored := r.rc.ignoredNextNodes[node]; ignored {
 		if entering {
 			r.writeBlockSeparator(node)
@@ -1957,18 +1846,10 @@ func (r *Renderer) handleIgnoredNode(node ast.Node, entering bool) (ast.WalkStat
 				r.writeBlockSeparator(node)
 				// Write start comment verbatim from source.
 				r.renderLines(node)
-				if hb, ok := node.(*ast.HTMLBlock); ok && hb.HasClosure() {
-					r.writeRawBytes(hb.ClosureLine.Value(r.rc.source))
-					r.flushRawLine()
-				}
 				// Write raw source between start and end comments.
 				r.writeRawBytes(r.rc.source[ir.betweenStart:ir.betweenEnd])
 				// Write end comment verbatim from source.
 				r.renderLines(ir.endNode)
-				if hb, ok := ir.endNode.(*ast.HTMLBlock); ok && hb.HasClosure() {
-					r.writeRawBytes(hb.ClosureLine.Value(r.rc.source))
-					r.flushRawLine()
-				}
 				r.rc.w.FlushLine()
 				return ast.WalkSkipChildren, true
 			}
@@ -1985,7 +1866,7 @@ func (r *Renderer) handleIgnoredNode(node ast.Node, entering bool) (ast.WalkStat
 
 // writeBlockSeparator writes a blank line before a block element when needed.
 // This implements prettier's block spacing rules from children.js.
-func (r *Renderer) writeBlockSeparator(node ast.Node) {
+func (r *renderRunner) writeBlockSeparator(node ast.Node) {
 	prev := node.PreviousSibling()
 	if prev == nil {
 		return
@@ -2003,9 +1884,13 @@ func (r *Renderer) writeBlockSeparator(node ast.Node) {
 
 	// Inside a ListItem, apply special rules:
 	if parent.Kind() == ast.KindListItem {
-		// Nested lists inside list items never get blank lines before them
-		// (prettier: isInTightListItem when node.type === "list").
+		// Nested lists inside tight list items do not get blank lines.
 		if node.Kind() == ast.KindList {
+			if grandparent := parent.Parent(); grandparent != nil {
+				if list, ok := grandparent.(*ast.List); ok && !list.IsTight && hasBlankPreviousLines(node) {
+					r.rc.w.EndLine()
+				}
+			}
 			return
 		}
 		// Other children in a list item get blank lines only in loose lists.
@@ -2021,20 +1906,15 @@ func (r *Renderer) writeBlockSeparator(node ast.Node) {
 	}
 
 	// goldmark's HasBlankPreviousLines covers most block separator cases.
-	if node.HasBlankPreviousLines() {
+	if hasBlankPreviousLines(node) {
 		r.rc.w.EndLine()
 		return
 	}
 
-	// Block elements in Document, Blockquote, FootnoteList, or Footnote
-	// always get blank line separation.
+	// Block elements in Document and Blockquote always get blank line separation.
 	switch parent.Kind() {
 	case ast.KindDocument, ast.KindBlockquote:
 		r.rc.w.EndLine()
-	default:
-		if parent.Kind() == east.KindFootnoteList || parent.Kind() == east.KindFootnote {
-			r.rc.w.EndLine()
-		}
 	}
 }
 
@@ -2046,14 +1926,17 @@ func prettierIgnoreKind(node ast.Node, source []byte) string {
 	if node.Kind() != ast.KindHTMLBlock {
 		return ""
 	}
-	lines := node.Lines()
+	lines := sourceSegmentsOf(node)
+	if htmlBlock, ok := node.(*ast.HTMLBlock); ok {
+		lines = htmlBlock.Value.Segments()
+	}
 	if lines.Len() == 0 {
 		return ""
 	}
 	var text []byte
 	for i := range lines.Len() {
 		seg := lines.At(i)
-		text = append(text, seg.Value(source)...)
+		text = append(text, seg.Bytes(source)...)
 	}
 	trimmed := string(bytes.TrimSpace(text))
 	switch trimmed {
@@ -2074,7 +1957,7 @@ func isPrettierIgnoreComment(node ast.Node, source []byte) bool {
 
 // writeURL writes a link/image URL. If the URL contains spaces or characters
 // that are dangerous inside the `[text](url)` syntax, it is wrapped in <>.
-func (r *Renderer) writeURL(url []byte, dangerousChars string) {
+func (r *renderRunner) writeURL(url []byte, dangerousChars string) {
 	urlStr := string(url)
 	needsAngleBrackets := strings.ContainsAny(urlStr, " "+dangerousChars)
 	if needsAngleBrackets {
@@ -2087,7 +1970,7 @@ func (r *Renderer) writeURL(url []byte, dangerousChars string) {
 }
 
 // writeLinkTitle writes a link/image title in the configured quote style.
-func (r *Renderer) writeLinkTitle(title []byte) {
+func (r *renderRunner) writeLinkTitle(title []byte) {
 	if len(title) == 0 {
 		return
 	}
@@ -2106,34 +1989,37 @@ func (r *Renderer) writeLinkTitle(title []byte) {
 }
 
 // writeRawBytes writes source bytes without trimming trailing line whitespace.
-func (r *Renderer) writeRawBytes(b []byte) {
+func (r *renderRunner) writeRawBytes(b []byte) {
 	r.rc.w.PushPreserveTrailingWhitespace()
 	r.rc.w.WriteBytes(b)
 	r.rc.w.PopPreserveTrailingWhitespace()
 }
 
-func (r *Renderer) flushRawLine() {
+func (r *renderRunner) flushRawLine() {
 	r.rc.w.PushPreserveTrailingWhitespace()
 	r.rc.w.FlushLine()
 	r.rc.w.PopPreserveTrailingWhitespace()
 }
 
 // renderLines writes the line segments of a block node verbatim.
-func (r *Renderer) renderLines(node ast.Node) {
+func (r *renderRunner) renderLines(node ast.Node) {
 	r.rc.w.PushPreserveTrailingWhitespace()
 	defer r.rc.w.PopPreserveTrailingWhitespace()
 
-	lines := node.Lines()
+	lines := sourceSegmentsOf(node)
+	if htmlBlock, ok := node.(*ast.HTMLBlock); ok {
+		lines = htmlBlock.Value.Segments()
+	}
 	for i := range lines.Len() {
 		seg := lines.At(i)
-		val := seg.Value(r.rc.source)
+		val := seg.Bytes(r.rc.source)
 		r.rc.w.WriteBytes(val)
 		r.rc.w.FlushLine()
 	}
 }
 
 // renderNodeSource writes the original source for a block node.
-func (r *Renderer) renderNodeSource(node ast.Node) {
+func (r *renderRunner) renderNodeSource(node ast.Node) {
 	start, end, ok := nodeSourceRange(node, r.rc.source)
 	if !ok {
 		return
@@ -2154,10 +2040,14 @@ func nodeSourceRange(node ast.Node, source []byte) (int, int, bool) {
 func nodeLineRange(node ast.Node) (int, int, bool) {
 	ok := false
 	var start, end int
-	if node.Type() == ast.TypeBlock {
-		lines := node.Lines()
-		for i := range lines.Len() {
-			seg := lines.At(i)
+	lines := sourceSegmentsOf(node)
+	if htmlBlock, ok := node.(*ast.HTMLBlock); ok {
+		lines = htmlBlock.Value.Segments()
+	}
+	if codeBlock, ok := node.(*ast.CodeBlock); ok {
+		lines = codeBlock.Value.Segments()
+		if !codeBlock.Info.IsEmpty() {
+			seg := codeBlock.Info.Index()
 			if !ok || seg.Start < start {
 				start = seg.Start
 			}
@@ -2167,19 +2057,7 @@ func nodeLineRange(node ast.Node) (int, int, bool) {
 			ok = true
 		}
 	}
-
-	if hb, isHTMLBlock := node.(*ast.HTMLBlock); isHTMLBlock && hb.HasClosure() {
-		if !ok || hb.ClosureLine.Start < start {
-			start = hb.ClosureLine.Start
-		}
-		if !ok || hb.ClosureLine.Stop > end {
-			end = hb.ClosureLine.Stop
-		}
-		ok = true
-	}
-
-	if code, isFencedCodeBlock := node.(*ast.FencedCodeBlock); isFencedCodeBlock && code.Info != nil {
-		seg := code.Info.Segment
+	for _, seg := range lines {
 		if !ok || seg.Start < start {
 			start = seg.Start
 		}
@@ -2374,12 +2252,12 @@ func sourceListItemLineStart(item ast.Node, source []byte) int {
 	}
 	// Find the start of the list item in the source by looking at its first
 	// child's lines or the item's own position.
-	lines := item.Lines()
+	lines := sourceSegmentsOf(item)
 	var start int
 	if lines.Len() > 0 {
 		start = lines.At(0).Start
 	} else if item.FirstChild() != nil {
-		childLines := item.FirstChild().Lines()
+		childLines := sourceSegmentsOf(item.FirstChild())
 		if childLines.Len() > 0 {
 			start = childLines.At(0).Start
 		} else {
@@ -2427,12 +2305,12 @@ func listItemContentColumn(item ast.Node, source []byte) int {
 		return -1
 	}
 	child := item.FirstChild()
-	childLines := child.Lines()
+	childLines := sourceSegmentsOf(child)
 	if childLines.Len() == 0 {
 		// Inline content — check first text child.
 		if first := child.FirstChild(); first != nil {
 			if t, ok := first.(*ast.Text); ok {
-				seg := t.Segment
+				seg := t.Value.Index()
 				col := seg.Start
 				// Find column relative to line start.
 				for col > 0 && source[col-1] != '\n' {

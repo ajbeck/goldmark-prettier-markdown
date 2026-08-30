@@ -2,126 +2,93 @@ package prettier_test
 
 import (
 	"bytes"
+	"io"
+	"sync"
 	"testing"
 
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/renderer"
-	"github.com/yuin/goldmark/util"
-	"go.abhg.dev/goldmark/wikilink"
+	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/extension"
+	"github.com/yuin/goldmark/v2/parser"
+	"github.com/yuin/goldmark/v2/renderer"
 
-	prettier "github.com/ajbeck/goldmark-prettier-markdown"
+	prettier "github.com/ajbeck/goldmark-prettier-markdown/v2"
 )
 
-func newTestMarkdown(opts ...prettier.Option) goldmark.Markdown {
-	r := prettier.NewRenderer(opts...)
-	return goldmark.New(
-		goldmark.WithRenderer(
-			renderer.NewRenderer(
-				renderer.WithNodeRenderers(
-					util.Prioritized(r, 1000),
-				),
-			),
-		),
-	)
+type testMarkdown struct {
+	parser   parser.Parser
+	renderer renderer.Renderer[io.Writer]
 }
 
-func newTestMarkdownFootnote(opts ...prettier.Option) goldmark.Markdown {
-	r := prettier.NewRenderer(opts...)
-	md := goldmark.New(
-		goldmark.WithRenderer(
-			renderer.NewRenderer(
-				renderer.WithNodeRenderers(
-					util.Prioritized(r, 1000),
-				),
-			),
-		),
-	)
-	md.Parser().AddOptions(
-		parser.WithBlockParsers(
-			util.Prioritized(extension.NewFootnoteBlockParser(), 999),
-		),
-		parser.WithInlineParsers(
-			util.Prioritized(extension.NewFootnoteParser(), 101),
-		),
-		parser.WithASTTransformers(
-			util.Prioritized(extension.NewFootnoteASTTransformer(), 999),
-		),
-	)
-	return md
+func newTestMarkdown(opts ...prettier.Option) testMarkdown {
+	return testMarkdown{parser: parser.New(), renderer: prettier.NewRenderer(opts...)}
 }
 
-func newTestMarkdownDefList(opts ...prettier.Option) goldmark.Markdown {
-	r := prettier.NewRenderer(opts...)
-	md := goldmark.New(
-		goldmark.WithRenderer(
-			renderer.NewRenderer(
-				renderer.WithNodeRenderers(
-					util.Prioritized(r, 1000),
-				),
-			),
-		),
-	)
-	md.Parser().AddOptions(
-		parser.WithBlockParsers(
-			util.Prioritized(extension.NewDefinitionListParser(), 101),
-			util.Prioritized(extension.NewDefinitionDescriptionParser(), 102),
-		),
-	)
-	return md
+func newTestMarkdownFootnote(opts ...prettier.Option) testMarkdown {
+	return testMarkdown{
+		parser:   parser.New(parser.WithExtensions(extension.FootnoteParser)),
+		renderer: prettier.NewRenderer(opts...),
+	}
 }
 
-func newTestMarkdownWikiLink(opts ...prettier.Option) goldmark.Markdown {
-	r := prettier.NewRenderer(opts...)
-	md := goldmark.New(
-		goldmark.WithRenderer(
-			renderer.NewRenderer(
-				renderer.WithNodeRenderers(
-					util.Prioritized(r, 1000),
-				),
-			),
-		),
-	)
-	md.Parser().AddOptions(
-		parser.WithInlineParsers(
-			util.Prioritized(&wikilink.Parser{}, 199),
-		),
-	)
-	return md
+func newTestMarkdownDefList(opts ...prettier.Option) testMarkdown {
+	return testMarkdown{
+		parser:   parser.New(parser.WithExtensions(extension.DefinitionListParser)),
+		renderer: prettier.NewRenderer(opts...),
+	}
 }
 
-func newTestMarkdownGFM(opts ...prettier.Option) goldmark.Markdown {
-	r := prettier.NewRenderer(opts...)
-	md := goldmark.New(
-		goldmark.WithRenderer(
-			renderer.NewRenderer(
-				renderer.WithNodeRenderers(
-					util.Prioritized(r, 1000),
-				),
-			),
-		),
-	)
-	md.Parser().AddOptions(
-		parser.WithParagraphTransformers(
-			util.Prioritized(extension.NewTableParagraphTransformer(), 200),
-		),
-	)
-	md.Parser().AddOptions(
-		parser.WithInlineParsers(
-			util.Prioritized(extension.NewStrikethroughParser(), 500),
-		),
-	)
-	return md
+func newTestMarkdownGFM(opts ...prettier.Option) testMarkdown {
+	return testMarkdown{
+		parser:   parser.New(parser.WithExtensions(extension.GFMParser)),
+		renderer: prettier.NewRenderer(opts...),
+	}
 }
 
-func render(t *testing.T, md goldmark.Markdown, input string) string {
+func render(t *testing.T, md testMarkdown, input string) string {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := md.Convert([]byte(input), &buf); err != nil {
-		t.Fatalf("Convert() error: %v", err)
+	source := []byte(input)
+	if err := md.renderer.Render(&buf, source, md.parser.Parse(source)); err != nil {
+		t.Fatalf("Render() error: %v", err)
 	}
 	return buf.String()
+}
+
+func TestRendererConcurrent(t *testing.T) {
+	r := prettier.NewRenderer()
+	inputs := []string{
+		"# Heading\n\nParagraph with **strong** text.\n",
+		"- [x] done\n- [ ] next\n",
+		"| a | b |\n| - | -: |\n| x | y |\n",
+	}
+	type document struct {
+		source []byte
+		node   ast.Node
+	}
+	p := parser.New(parser.WithExtensions(extension.GFMParser))
+	documents := make([]document, 0, len(inputs))
+	for _, input := range inputs {
+		source := []byte(input)
+		documents = append(documents, document{source: source, node: p.Parse(source)})
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(inputs)*8)
+	for range 8 {
+		for _, doc := range documents {
+			wg.Go(func() {
+				var buf bytes.Buffer
+				if err := r.Render(&buf, doc.source, doc.node); err != nil {
+					errs <- err
+				}
+			})
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("Render() error: %v", err)
+	}
 }
 
 // Tests below require non-default options (custom printWidth, tabWidth,
@@ -430,13 +397,13 @@ func TestProseWrapAlwaysCJK(t *testing.T) {
 	}
 }
 
-func TestProseWrapAlwaysSetextToATX(t *testing.T) {
+func TestProseWrapAlwaysPreservesSetext(t *testing.T) {
 	md := newTestMarkdown(
 		prettier.WithProseWrap(prettier.ProseWrapAlways),
 		prettier.WithPrintWidth(25),
 	)
 	got := render(t, md, "this is a long setext heading\n===")
-	want := "# this is a long setext heading\n"
+	want := "this is a long setext heading\n=============================\n"
 	if got != want {
 		t.Errorf("got:  %q\nwant: %q", got, want)
 	}

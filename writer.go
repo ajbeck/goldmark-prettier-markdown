@@ -5,7 +5,7 @@ import (
 	"io"
 	"unicode"
 
-	"github.com/yuin/goldmark/util"
+	"github.com/yuin/goldmark/v2/util"
 )
 
 // lineDelim is the newline character used as line delimiter.

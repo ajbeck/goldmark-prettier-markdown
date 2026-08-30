@@ -1,7 +1,5 @@
 package prettier
 
-import "github.com/yuin/goldmark/renderer"
-
 // ProseWrap controls how prose text is wrapped.
 type ProseWrap int
 
@@ -70,7 +68,3 @@ func (o withPrintWidth) SetPrettierOption(c *Config) { c.PrintWidth = o.value }
 
 // WithPrintWidth sets the target line width for prose wrapping and compact tables.
 func WithPrintWidth(v int) Option { return withPrintWidth{v} }
-
-// optionName is the renderer.OptionName for prettier config options passed
-// through goldmark's renderer.Option interface.
-const optionName renderer.OptionName = "PrettierConfig"

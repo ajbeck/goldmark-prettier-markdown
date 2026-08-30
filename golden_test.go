@@ -7,9 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yuin/goldmark"
-
-	prettier "github.com/ajbeck/goldmark-prettier-markdown"
+	prettier "github.com/ajbeck/goldmark-prettier-markdown/v2"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -34,7 +32,7 @@ var proseWrapVariants = []optionVariant{
 // categoryConfig holds per-category test configuration: which parser setup to
 // use and which option variants to test.
 type categoryConfig struct {
-	newMarkdown func(...prettier.Option) goldmark.Markdown
+	newMarkdown func(...prettier.Option) testMarkdown
 	variants    []optionVariant
 }
 
@@ -53,7 +51,6 @@ var categories = map[string]categoryConfig{
 	"strikethrough":  {newMarkdown: newTestMarkdownGFM, variants: defaultVariants},
 	"footnote":       {newMarkdown: newTestMarkdownFootnote, variants: proseWrapVariants},
 	"deflist":        {newMarkdown: newTestMarkdownDefList, variants: defaultVariants},
-	"wikilink":       {newMarkdown: newTestMarkdownWikiLink, variants: defaultVariants},
 }
 
 func TestGolden(t *testing.T) {
