@@ -12,15 +12,17 @@ Each rule references the prettier source file it was extracted from.
 
 ### ATX Headings
 
-- Always use `#` prefix style: `# H1`, `## H2`, ... `###### H6`
+- Preserve the ATX prefix style: `# H1`, `## H2`, ... `###### H6`
 - Always exactly one space between `#` markers and content
 - No closing `#` markers
-- Normalize setext headings to ATX headings
+- Preserve setext headings, normalizing their underline to `=` (level 1) or
+  `-` (level 2)
 
 ```markdown
 # ATX heading
 
-# Setext heading
+Setext heading
+==============
 ```
 
 ---
@@ -366,7 +368,6 @@ Between CJK characters split from non-whitespace-separated text, empty string wh
 In these contexts, all newlines must become spaces (no line breaks allowed):
 - Table cells
 - Links
-- Wiki links
 - ATX headings
 
 ---

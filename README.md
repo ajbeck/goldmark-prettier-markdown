@@ -33,7 +33,7 @@ own test suite. The formatting rules are documented in detail in
 ## Installation
 
 ```bash
-go get github.com/ajbeck/goldmark-prettier-markdown
+go get github.com/ajbeck/goldmark-prettier-markdown/v2
 ```
 
 Requires Go 1.26+.
@@ -48,50 +48,25 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/renderer"
-	"github.com/yuin/goldmark/util"
-	"go.abhg.dev/goldmark/wikilink"
+	"github.com/yuin/goldmark/v2/extension"
+	"github.com/yuin/goldmark/v2/parser"
 
-	prettier "github.com/ajbeck/goldmark-prettier-markdown"
+	prettier "github.com/ajbeck/goldmark-prettier-markdown/v2"
 )
 
 func main() {
 	r := prettier.NewRenderer()
-	md := goldmark.New(
-		goldmark.WithParserOptions(
-			parser.WithParagraphTransformers(
-				util.Prioritized(extension.NewTableParagraphTransformer(), 200),
-			),
-			parser.WithInlineParsers(
-				util.Prioritized(extension.NewTaskCheckBoxParser(), 0),
-				util.Prioritized(extension.NewFootnoteParser(), 101),
-				util.Prioritized(&wikilink.Parser{}, 199),
-				util.Prioritized(extension.NewStrikethroughParser(), 500),
-			),
-			parser.WithBlockParsers(
-				util.Prioritized(extension.NewDefinitionListParser(), 101),
-				util.Prioritized(extension.NewDefinitionDescriptionParser(), 102),
-				util.Prioritized(extension.NewFootnoteBlockParser(), 999),
-			),
-			parser.WithASTTransformers(
-				util.Prioritized(extension.NewFootnoteASTTransformer(), 999),
-			),
-		),
-		goldmark.WithRenderer(
-			renderer.NewRenderer(
-				renderer.WithNodeRenderers(
-					util.Prioritized(r, 1000),
-				),
-			),
+	p := parser.New(
+		parser.WithExtensions(
+			extension.GFMParser,
+			extension.FootnoteParser,
+			extension.DefinitionListParser,
 		),
 	)
 
 	input := []byte("# Hello   World\n\nSome   **bold**  text.\n")
 	var buf bytes.Buffer
-	if err := md.Convert(input, &buf); err != nil {
+	if err := r.Render(&buf, input, p.Parse(input)); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Print(buf.String())
@@ -142,10 +117,7 @@ nodes are present in the AST.
 
 - **Footnotes** — `[^label]` references and definitions, with inline or block layout
 - **Definition lists** — terms and descriptions
-- **Wiki links** — `[[target]]` and `[[target|label]]` via [goldmark-wikilink](https://go.abhg.dev/goldmark/wikilink)
-
-These features also require their parser extensions. Wiki links use
-`go.abhg.dev/goldmark/wikilink`.
+These features require their parser extensions, as shown in the usage example.
 
 ## Formatting Highlights
 
@@ -184,8 +156,8 @@ module semver tag:
 ```bash
 go run ./cmd/scripts ci
 go run ./cmd/scripts prettier-parity
-git tag v0.1.0
-git push origin v0.1.0
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 The release workflow validates the tagged commit, then creates a GitHub Release

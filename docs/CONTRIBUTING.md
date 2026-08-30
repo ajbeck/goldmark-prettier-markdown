@@ -7,7 +7,7 @@ This guide is for agents (and humans) working on goldmark-prettier-markdown. It 
 This is a [goldmark](https://github.com/yuin/goldmark) renderer that outputs markdown formatted to match [prettier](https://prettier.io/)'s markdown formatter. Prettier is the single source of truth — when in doubt about how something should be formatted, check prettier's output.
 
 **Language:** Go (1.26+)
-**Dependencies:** goldmark, go.abhg.dev/goldmark/wikilink
+**Dependencies:** Goldmark v2
 **Test command:** `go run ./cmd/scripts test`
 
 ## Setting Up the Prettier Reference
@@ -36,11 +36,10 @@ All markdown formatting logic lives under `src/language-markdown/`:
 | `print/heading.js` | Heading rendering and ATX normalization | Heading formatting |
 | `print/list.js` | List marker alternation, ordered list numbering, alignment | List rendering |
 | `print/table.js` | Table column width measurement, alignment, compact mode | GFM table formatting |
-| `print/preprocess.js` | AST preprocessing — splits text into sentences/words, detects wiki link boundaries | Understanding how prettier's AST differs from what we receive from goldmark |
+| `print/preprocess.js` | AST preprocessing — splits text into sentences and words | Understanding how prettier's AST differs from what we receive from goldmark |
 | `print/ignored.js` | `<!-- prettier-ignore -->` handling | Ignore directive behavior |
 | `constants.evaluate.js` | Default markers (`_` for emphasis, `**` for strong, `-` for unordered lists, `.` for ordered) | Default formatting choices |
 | `options.js` | Option definitions (proseWrap, singleQuote, tabWidth, proseWrap) | Adding new options |
-| `parse/unified-plugins/wiki-link.js` | Wiki link parser — regex `/^\[\[(?<linkContents>.+?)\]\]/s` | Wiki link syntax |
 
 ### Document IR (for understanding fill-wrap)
 
@@ -80,7 +79,6 @@ tests/format/markdown/
 ├── strong/             # **strong**
 ├── table/              # GFM tables
 ├── thematicBreak/      # --- and ***
-├── wiki-link/          # [[wiki links]]
 ├── word/               # emphasis delimiter escaping
 └── ...
 ```
@@ -116,27 +114,27 @@ All render functions are in a single file, organized by section with comment hea
 1. **Type definitions** — `Renderer`, `renderContext`, `listContext`, etc.
 2. **Block node renderers** — `renderDocument`, `renderParagraph`, `renderHeading`, etc.
 3. **Inline node renderers** — `renderText`, `renderEmphasis`, `renderCodeSpan`, etc.
-4. **GFM extension renderers** — `renderTable`, `renderStrikethrough`, `renderTaskCheckBox`
-5. **Footnote extension renderers** — `renderFootnoteList`, `renderFootnote`, etc.
+4. **GFM extension renderers** — `renderTable`, `renderStrikethrough`, and task-marker handling in `renderListItem`
+5. **Footnote extension renderers** — `renderFootnote`, `renderFootnoteLink`, etc.
 6. **Definition list extension renderers** — `renderDefinitionList`, etc.
-7. **Wiki link extension renderer** — `renderWikiLink`
-8. **Fill-wrap infrastructure** — `beginFillWrap`, `endFillWrap`, `fillWrap`, `markBreakableSpaces`
-9. **Helpers** — `writeBlockSeparator`, `handleIgnoredNode`, `writeURL`, list utilities, etc.
+7. **Fill-wrap infrastructure** — `beginFillWrap`, `endFillWrap`, `fillWrap`, `markBreakableSpaces`
+8. **Helpers** — `writeBlockSeparator`, `handleIgnoredNode`, `writeURL`, list utilities, etc.
 
 ## How to Add a New Extension Node
 
-1. **Find or add the goldmark extension parser.** Check if goldmark has a built-in extension (like `extension.NewFootnoteBlockParser()`) or if you need a third-party package (like `go.abhg.dev/goldmark/wikilink`).
+1. **Find or add the Goldmark v2 parser extension.** Prefer built-in parser extensions such as `extension.FootnoteParser`.
 
 2. **Study the AST.** Write a small debug script to parse sample input and dump the AST:
    ```go
-   doc := md.Parser().Parse(text.NewReader([]byte(input)))
-   doc.Dump([]byte(input), 0)
+   source := []byte(input)
+   doc := parser.New().Parse(source)
+   _ = doc.Dump(source).PrettyPrint(os.Stdout, source)
    ```
    Key things to understand: node types, child structure, what fields are available, and what information comes from source vs. the AST.
 
 3. **Read prettier's rendering.** Open `print/mdast.js` and find the `case` for the corresponding mdast node type. Understand the formatting rules, then check the test snapshots.
 
-4. **Register the node kind(s)** in `RegisterFuncs` at the top of `renderer.go`.
+4. **Register the node kind(s)** in the node-renderer map at the top of `renderer.go`.
 
 5. **Implement render functions.** Follow the pattern of existing renderers:
    - Block nodes: handle `entering` (write prefix, push prefixes) and `!entering` (pop prefixes, flush)
@@ -145,19 +143,11 @@ All render functions are in a single file, organized by section with comment hea
 
 6. **Add a test helper** in `renderer_test.go` that creates a goldmark instance with the extension's parser (but NOT its HTML renderer — we provide our own renderer). Example:
    ```go
-   func newTestMarkdownFootnote(opts ...prettier.Option) goldmark.Markdown {
-       r := prettier.NewRenderer(opts...)
-       md := goldmark.New(
-           goldmark.WithRenderer(renderer.NewRenderer(
-               renderer.WithNodeRenderers(util.Prioritized(r, 1000)),
-           )),
-       )
-       md.Parser().AddOptions(
-           parser.WithBlockParsers(util.Prioritized(extension.NewFootnoteBlockParser(), 999)),
-           parser.WithInlineParsers(util.Prioritized(extension.NewFootnoteParser(), 101)),
-           parser.WithASTTransformers(util.Prioritized(extension.NewFootnoteASTTransformer(), 999)),
-       )
-       return md
+   func newTestMarkdownFootnote(opts ...prettier.Option) testMarkdown {
+       return testMarkdown{
+           parser: parser.New(parser.WithExtensions(extension.FootnoteParser)),
+           renderer: prettier.NewRenderer(opts...),
+       }
    }
    ```
 
@@ -181,9 +171,8 @@ When our output doesn't match prettier's:
 3. **Read the prettier source for that node type.** Start at `print/mdast.js` and trace through any helper functions it calls.
 
 4. **Check if it's an AST difference.** Prettier uses mdast, we use goldmark. Some differences:
-   - Goldmark's `ast.Heading` doesn't distinguish ATX from setext; we normalize both to ATX
-   - Goldmark's `FootnoteLink` has `Index` but not the ref label — we build a map from `FootnoteList`
-   - Goldmark's AST transformer adds `FootnoteBacklink` nodes we need to skip
+   - Goldmark's `ast.Heading` records whether a heading was parsed as ATX or setext; preserve that distinction when Prettier does
+   - Goldmark's `FootnoteReference` and `FootnoteDefinition` carry their labels directly
    - Goldmark's emphasis doesn't store the original marker character — we infer from source
 
 5. **Check if it's a document IR difference.** Prettier's `group()` + `softline` means "try inline, fall back to block." We typically pre-measure width and decide before rendering.
@@ -220,7 +209,7 @@ Spaces are non-breakable when: inside links (`singleLineDepth > 0`), between CJ 
 ### Block Separation
 
 `writeBlockSeparator(node)` handles blank line insertion. The rules vary by parent context:
-- Document/Blockquote/FootnoteList/Footnote: always blank line between children
+- Document/Blockquote/FootnoteDefinition: always blank line between children
 - ListItem: blank lines only in loose lists; no blank line before nested lists
 - HTML blocks: no blank line between adjacent HTML blocks
 - prettier-ignore: suppresses blank line after the comment
@@ -280,12 +269,12 @@ go run ./cmd/scripts prettier-parity
 Create and push an immutable Go module semver tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
-Use normal release tags such as `v0.1.0` and prerelease tags such as
-`v0.1.0-rc.1`. Pushing a matching `v*.*.*` tag starts
+Use normal release tags such as `v2.0.0` and prerelease tags such as
+`v2.0.0-rc.1`. Pushing a matching `v*.*.*` tag starts
 `.github/workflows/release.yaml`.
 
 The release workflow:

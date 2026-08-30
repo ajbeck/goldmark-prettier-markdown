@@ -7,7 +7,7 @@ This project is a [goldmark](https://github.com/yuin/goldmark) renderer that pro
 The approach is:
 
 1. **Read prettier's source** to understand the exact formatting rules for each AST node type
-2. **Translate those rules into Go** using goldmark's `renderer.NodeRenderer` interface
+2. **Translate those rules into Go** using Goldmark v2's `renderer.Renderer[io.Writer]` interface
 3. **Validate against prettier's test snapshots** to confirm our output matches
 
 Prettier's markdown formatter lives at `src/language-markdown/` in the prettier repo. It operates on an [mdast](https://github.com/syntax-tree/mdast) AST (produced by [remark](https://github.com/remarkjs/remark)), while we operate on goldmark's AST. The ASTs differ in structure, so our implementations can't be 1:1 translations — we implement the same *formatting behavior* using goldmark's node types and walker pattern.
@@ -23,17 +23,16 @@ Key differences from prettier's architecture:
 
 ## Design Decisions
 
-### Interface Choice: NodeRenderer (not Renderer)
+### Interface Choice: Renderer
 
-We implement `renderer.NodeRenderer` (like goldmark-adf) rather than directly implementing `renderer.Renderer` (like goldmark-markdown).
+Goldmark v2 separates parsing and rendering and makes renderers generic over their writer type. `Renderer` implements `renderer.Renderer[io.Writer]` with a `renderer.Helper`, which walks the AST and dispatches to the package's private node handlers.
 
 **Rationale:**
-- `NodeRenderer` is the intended extension point — goldmark's built-in `renderer.Renderer` already handles AST walking and dispatching
-- Registering via `NodeRendererFuncRegisterer` lets us plug into goldmark's standard composition model
-- GFM extension nodes (tables, strikethrough, task checkboxes) register the same way as core nodes — no special handling
-- Users can compose our renderer with other `NodeRenderer` implementations via priority ordering
+- A complete renderer is the v2 composition model; callers construct a parser and render its AST with this renderer.
+- `renderer.Context` carries all mutable state for one render, so configured renderer instances can be reused concurrently.
+- GFM extension nodes (tables and strikethrough) use the same node-handler map as core nodes; task status is attached to `ListItem`.
 
-**Trade-off:** goldmark-markdown's direct `Renderer` approach gave it more control over the walk and custom function signatures. We give that up in exchange for better composability. The standard `NodeRendererFunc` signature `(w util.BufWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error)` provides everything we need.
+The private handler signature receives Goldmark v2's render context in addition to the writer, source, node, and enter/exit state.
 
 ### Writer Design
 
@@ -61,27 +60,28 @@ renderContext
 ├── fillWrapBuf      *bytes.Buffer     // captures content for fill-wrapping
 ├── fillWrapWriter   *markdownWriter   // saved writer during fill-wrap
 ├── singleLineDepth  int              // nesting in non-breakable contexts
-└── footnoteRefs     map[int][]byte   // footnote index → ref label
 ```
 
 ### GFM Extension Support
 
-GFM node types are registered in `RegisterFuncs` alongside core nodes:
+GFM node types are registered in the renderer's node-handler map alongside core nodes:
 
 - `extast.KindTable` → `renderTable`
 - `extast.KindTableHeader` → `renderTableHeader`
 - `extast.KindTableRow` → `renderTableRow`
 - `extast.KindTableCell` → `renderTableCell`
 - `extast.KindStrikethrough` → `renderStrikethrough`
-- `extast.KindTaskCheckBox` → `renderTaskCheckBox`
+
+Task-list state is read from `ListItem` with `extension.TaskStatusOf`.
 
 Table rendering requires a two-pass approach: first collect all cell content and measure widths, then format with column padding. This means the table renderer must skip the default walk for its children and handle them manually.
 
 ### Heading Formatting
 
-Goldmark parses ATX and setext headings as `ast.Heading`. The renderer always
-prints ATX headings to match Prettier, so setext underline source text is not
-preserved.
+Goldmark parses ATX and setext headings as `ast.Heading` and records the
+source form in `HeadingKind`. The renderer normalizes ATX spacing and closing
+markers, while preserving setext headings with a normalized underline, matching
+current Prettier behavior.
 
 ### Emphasis Marker Selection
 
@@ -177,10 +177,9 @@ goldmark-prettier-markdown/
 All render functions live in `renderer.go` organized by section:
 - Block node renderers (document, heading, paragraph, blockquote, code, HTML, list, thematic break)
 - Inline node renderers (text, emphasis, code span, link, image, autolink, raw HTML)
-- GFM extension renderers (table, strikethrough, task checkbox)
-- Footnote extension renderers (footnote list, footnote, footnote link, backlink)
+- GFM extension renderers (table, strikethrough, task markers on list items)
+- Footnote extension renderers (footnote definition and reference)
 - Definition list extension renderers
-- Wiki link extension renderer
 - Fill-wrap infrastructure (beginFillWrap, endFillWrap, fillWrap, markBreakableSpaces)
 - Helpers (block separator, ignore ranges, URL encoding, list utilities)
 
@@ -190,7 +189,7 @@ All render functions live in `renderer.go` organized by section:
 
 ### Phase 1: Core Skeleton ✅
 
-- [x] `renderer.go` — `NodeRenderer` implementation, `RegisterFuncs`, render context
+- [x] `renderer.go` — Goldmark v2 `Renderer` implementation, node-handler map, render context
 - [x] `writer.go` — `markdownWriter` with prefix stack, line buffering, trailing trim
 - [x] `options.go` — Config struct, `Option` interface, `WithProseWrap`, `WithSingleQuote`, `WithTabWidth`
 
@@ -198,20 +197,18 @@ All render functions live in `renderer.go` organized by section:
 
 - [x] Document (trailing newline)
 - [x] Paragraph (block separator, blockquote paragraph handling)
-- [x] Heading (ATX output, including setext input)
+- [x] Heading (normalized ATX and preserved setext output)
 - [x] Blockquote (`> ` prefix, nesting, multiple paragraphs)
 - [x] Fenced code block (backtick counting, full info string)
 - [x] Indented code block (4-space prefix)
 - [x] HTML block (passthrough with closure line)
 - [x] Thematic break (`---` / `***` alternation in list context)
-- [x] TextBlock (block separator only)
 - [x] Block spacing (blank lines via HasBlankPreviousLines)
 - [x] Idempotency (render output re-renders identically)
 
 ### Phase 3: Inline Elements ✅
 
 - [x] Text (soft/hard line breaks)
-- [x] String (verbatim)
 - [x] Emphasis — full marker selection per prettier rules
 - [x] Inline code (backtick counting, space padding per CommonMark rules)
 - [x] Link (`[text](url "title")`, quote style option, URL angle-bracket wrapping)
@@ -228,7 +225,7 @@ All render functions live in `renderer.go` organized by section:
 - [x] Tight vs. loose (via goldmark's HasBlankPreviousLines)
 - [x] Git-diff-friendly ordered lists (detect `N. 1. 1. ...` pattern in source)
 - [x] Aligned list prefix (pad to tabWidth boundaries for ordered lists)
-- [x] Task checkbox (`[x]` / `[ ]`) — GFM stub
+- [x] Task list items (`[x]` / `[ ]`) via GFM list-item attributes
 - [x] Plus marker normalization (`+` → `-`)
 
 ### Phase 5: GFM Tables ✅
@@ -269,6 +266,5 @@ All render functions live in `renderer.go` organized by section:
 
 ### Phase 9: Extension Nodes ✅
 
-- [x] Footnote support (`FootnoteList`, `Footnote`, `FootnoteLink`, `FootnoteBacklink`) — inline vs block form based on child count, paragraph line count, and proseWrap mode
+- [x] Footnote support (`FootnoteDefinition`, `FootnoteReference`) — inline vs block form based on child count, paragraph line count, and proseWrap mode
 - [x] Definition list support (`DefinitionList`, `DefinitionTerm`, `DefinitionDescription`) — tight/loose, multi-term, multi-description
-- [x] Wiki link support (`go.abhg.dev/goldmark/wikilink`) — `[[target]]`, `[[target|label]]`, `[[target#fragment]]`, `![[embed]]`
