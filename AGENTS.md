@@ -38,7 +38,7 @@ Recent commits use concise conventional prefixes, including `docs:`, `test:`, an
 
 Pull requests should describe the formatting behavior changed, list relevant test coverage, and reference Prettier behavior or fixtures when applicable. For visible Markdown output changes, include before/after examples or fixture names. Update `docs/ARCHITECTURE.md` or `docs/FORMATTING_RULES.md` when changing supported node behavior or formatting rules.
 
-Releases are tag-first. Run `go run ./cmd/scripts ci` and `go run ./cmd/scripts prettier-parity`, then push an immutable semver tag such as `v2.0.0`; the release workflow validates the tagged commit and creates the GitHub Release. Use prerelease tags such as `v2.0.0-rc.1` when needed, and do not edit or recreate an existing release tag.
+Releases are managed by Release Please. Conventional Commits merged to `main` create or update a release pull request; merging that pull request creates the Go-module tag and GitHub Release. Run `go run ./cmd/scripts ci` and `go run ./cmd/scripts prettier-parity` before merging a release pull request. Do not create or retag releases manually.
 
 ## Agent-Specific Instructions
 
