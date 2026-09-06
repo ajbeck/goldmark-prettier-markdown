@@ -256,34 +256,26 @@ docs: unwrap prose lines in documentation
 
 ## Release Process
 
-This repository uses tag-first Go module releases. The tag is the release
-source of truth; the GitHub workflow does not create or move tags.
+This repository uses [Release Please](https://github.com/googleapis/release-please-action)
+to manage Go-module releases from Conventional Commits.
 
-Before tagging, validate the commit locally:
+When a conventional commit reaches `main`, `.github/workflows/release-please.yaml`
+creates or updates the pending release pull request. Review its generated
+changelog and version, then merge it to create the immutable tag and GitHub
+Release. The first release produced by this configuration is `v2.0.0`, which
+matches the module's `/v2` import path.
+
+Before merging a release pull request, validate it locally:
 
 ```bash
 go run ./cmd/scripts ci
 go run ./cmd/scripts prettier-parity
 ```
 
-Create and push an immutable Go module semver tag:
-
-```bash
-git tag v2.0.0
-git push origin v2.0.0
-```
-
-Use normal release tags such as `v2.0.0` and prerelease tags such as
-`v2.0.0-rc.1`. Pushing a matching `v*.*.*` tag starts
-`.github/workflows/release.yaml`.
-
-The release workflow:
-
-1. Checks out the tagged commit.
-2. Validates the tag as Go module semver.
-3. Runs `go run ./cmd/scripts ci`.
-4. Creates a GitHub Release with generated notes.
-5. Marks tags containing `-` as prereleases.
-
-Do not retag an existing version or recreate a release tag. If a release needs a
-fix, publish a new patch version instead.
+The workflow creates a short-lived GitHub App token, so release PRs and releases
+trigger the repository's normal workflows. Before merging the workflow,
+configure `RELEASE_PLEASE_APP_ID` as a repository variable and
+`RELEASE_PLEASE_APP_PRIVATE_KEY` as a repository secret for an app with contents,
+issues, and pull-requests write permissions. Release Please owns the tag and
+GitHub Release; do not create or retag releases manually. Publish a new patch
+release for corrections.

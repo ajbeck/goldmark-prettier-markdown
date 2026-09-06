@@ -150,19 +150,18 @@ Run `go run ./cmd/scripts help` for all targets.
 
 ## Releases
 
-Releases are tag-first. After local validation, create and push an immutable Go
-module semver tag:
+Releases are managed by [Release Please](https://github.com/googleapis/release-please-action).
+It creates or updates a release pull request from Conventional Commits whenever
+changes are merged to `main`. Review and merge that pull request to create the
+Go-module tag and GitHub Release.
 
-```bash
-go run ./cmd/scripts ci
-go run ./cmd/scripts prettier-parity
-git tag v2.0.0
-git push origin v2.0.0
-```
+The first automated release is `v2.0.0`, matching this module's `/v2` import
+path. The workflow creates a short-lived GitHub App token, so release PRs and
+releases trigger the repository's normal workflows. Configure the app ID as the
+`RELEASE_PLEASE_APP_ID` repository variable and its private key as the
+`RELEASE_PLEASE_APP_PRIVATE_KEY` repository secret before merging the workflow.
 
-The release workflow validates the tagged commit, then creates a GitHub Release
-for that tag. See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full
-release process, including prereleases.
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full release process.
 
 ## License
 
