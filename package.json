@@ -1,0 +1,10 @@
+{
+  "name": "goldmark-prettier-markdown-development",
+  "private": true,
+  "scripts": {
+    "prettier-parity": "go run ./cmd/scripts prettier-parity"
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  }
+}

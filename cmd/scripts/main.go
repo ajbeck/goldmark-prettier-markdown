@@ -117,7 +117,7 @@ Examples:
   go run ./cmd/scripts ci
   go run ./cmd/scripts test
   go run ./cmd/scripts test -run TestProseWrapAlways -v
-  go run ./cmd/scripts prettier-parity
+  npm ci && npm run prettier-parity
   ARGS="-run TestProseWrapAlways -v" go run ./cmd/scripts test`)
 	return nil
 }
