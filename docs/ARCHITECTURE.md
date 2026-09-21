@@ -34,6 +34,11 @@ Goldmark v2 separates parsing and rendering and makes renderers generic over the
 
 The private handler signature receives Goldmark v2's render context in addition to the writer, source, node, and enter/exit state.
 
+Core link-reference definitions are registered as block nodes. Reference links
+and images retain Goldmark's full, collapsed, or shortcut kind so the renderer
+can emit the original reference form while normalizing labels the same way as
+Prettier.
+
 ### Writer Design
 
 We use a custom `markdownWriter` (inspired by goldmark-markdown) that wraps `util.BufWriter` and provides:
@@ -74,7 +79,17 @@ GFM node types are registered in the renderer's node-handler map alongside core 
 
 Task-list state is read from `ListItem` with `extension.TaskStatusOf`.
 
-Table rendering requires a two-pass approach: first collect all cell content and measure widths, then format with column padding. This means the table renderer must skip the default walk for its children and handle them manually.
+Table rendering requires a two-pass approach: first collect all cell content and
+measure its grapheme-aware monospace width, then format with column padding. The
+same width function is used by prose wrapping so CJK, emoji, combining marks,
+and joined emoji sequences do not drift between formatting modes. This means
+the table renderer must skip the default walk for its children and handle them
+manually.
+
+Inline image alt text is recovered from the original source rather than rebuilt
+from parsed children. Goldmark's child nodes carry semantic content, while
+Prettier deliberately preserves source spelling, delimiter counts, and spacing
+for most image alt text.
 
 ### Heading Formatting
 
@@ -139,7 +154,10 @@ Syntax safety: spaces before words that would create block-level syntax at line 
 
 Prettier classifies characters into four kinds for whitespace handling: `KIND_NON_CJK`, `KIND_CJ_LETTER`, `KIND_K_LETTER`, `KIND_CJK_PUNCTUATION`.
 
-Go implements this using `unicode` package property tables. CJK characters count as double-width for line width calculations in fill-wrap.
+Go classifies CJK text using `unicode` package property tables and measures
+rendered text with `uniseg.StringWidth`. CJK and emoji generally count as
+double-width while combining marks and joined sequences are measured as their
+displayed grapheme.
 
 **Prettier source:** `print/whitespace.js`
 
@@ -235,6 +253,9 @@ All render functions live in `renderer.go` organized by section:
 - [x] Alignment row generation (`:---`, `:--:`, `---:`, `----`)
 - [x] Cell padding (left/center/right alignment with space distribution)
 - [x] Pipe escaping in inline code within cells
+- [x] Pipe escaping in text cells
+- [x] Grapheme-aware CJK and emoji column widths
+- [x] Omit trailing empty data cells
 - [x] Cell inline content rendering (emphasis, strong, code, links, images, strikethrough)
 - [x] Table idempotency verified
 

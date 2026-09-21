@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rivo/uniseg"
 	"github.com/yuin/goldmark/v2/ast"
 	"github.com/yuin/goldmark/v2/extension"
 	east "github.com/yuin/goldmark/v2/extension/ast"
@@ -85,33 +86,34 @@ func (r *Renderer) documentNodeRenderer() renderer.NodeRenderer[io.Writer] {
 
 func (r *Renderer) nodeRenderers() map[ast.NodeKind]renderer.NodeRenderer[io.Writer] {
 	return map[ast.NodeKind]renderer.NodeRenderer[io.Writer]{
-		ast.KindDocument:               r.documentNodeRenderer(),
-		ast.KindHeading:                r.nodeRenderer((*renderRunner).renderHeading),
-		ast.KindBlockquote:             r.nodeRenderer((*renderRunner).renderBlockquote),
-		ast.KindCodeBlock:              r.nodeRenderer((*renderRunner).renderCodeBlock),
-		ast.KindHTMLBlock:              r.nodeRenderer((*renderRunner).renderHTMLBlock),
-		ast.KindList:                   r.nodeRenderer((*renderRunner).renderList),
-		ast.KindListItem:               r.nodeRenderer((*renderRunner).renderListItem),
-		ast.KindParagraph:              r.nodeRenderer((*renderRunner).renderParagraph),
-		ast.KindThematicBreak:          r.nodeRenderer((*renderRunner).renderThematicBreak),
-		ast.KindAutoLink:               r.nodeRenderer((*renderRunner).renderAutoLink),
-		ast.KindCodeSpan:               r.nodeRenderer((*renderRunner).renderCodeSpan),
-		ast.KindEmphasis:               r.nodeRenderer((*renderRunner).renderEmphasis),
-		ast.KindStrong:                 r.nodeRenderer((*renderRunner).renderStrong),
-		ast.KindImage:                  r.nodeRenderer((*renderRunner).renderImage),
-		ast.KindLink:                   r.nodeRenderer((*renderRunner).renderLink),
-		ast.KindRawHTML:                r.nodeRenderer((*renderRunner).renderRawHTML),
-		ast.KindText:                   r.nodeRenderer((*renderRunner).renderText),
-		east.KindTable:                 r.nodeRenderer((*renderRunner).renderTable),
-		east.KindTableHeader:           r.nodeRenderer((*renderRunner).renderTableHeader),
-		east.KindTableRow:              r.nodeRenderer((*renderRunner).renderTableRow),
-		east.KindTableCell:             r.nodeRenderer((*renderRunner).renderTableCell),
-		east.KindStrikethrough:         r.nodeRenderer((*renderRunner).renderStrikethrough),
-		east.KindFootnoteDefinition:    r.nodeRenderer((*renderRunner).renderFootnote),
-		east.KindFootnoteReference:     r.nodeRenderer((*renderRunner).renderFootnoteLink),
-		east.KindDefinitionList:        r.nodeRenderer((*renderRunner).renderDefinitionList),
-		east.KindDefinitionTerm:        r.nodeRenderer((*renderRunner).renderDefinitionTerm),
-		east.KindDefinitionDescription: r.nodeRenderer((*renderRunner).renderDefinitionDescription),
+		ast.KindDocument:                r.documentNodeRenderer(),
+		ast.KindHeading:                 r.nodeRenderer((*renderRunner).renderHeading),
+		ast.KindBlockquote:              r.nodeRenderer((*renderRunner).renderBlockquote),
+		ast.KindCodeBlock:               r.nodeRenderer((*renderRunner).renderCodeBlock),
+		ast.KindHTMLBlock:               r.nodeRenderer((*renderRunner).renderHTMLBlock),
+		ast.KindList:                    r.nodeRenderer((*renderRunner).renderList),
+		ast.KindListItem:                r.nodeRenderer((*renderRunner).renderListItem),
+		ast.KindParagraph:               r.nodeRenderer((*renderRunner).renderParagraph),
+		ast.KindLinkReferenceDefinition: r.nodeRenderer((*renderRunner).renderLinkReferenceDefinition),
+		ast.KindThematicBreak:           r.nodeRenderer((*renderRunner).renderThematicBreak),
+		ast.KindAutoLink:                r.nodeRenderer((*renderRunner).renderAutoLink),
+		ast.KindCodeSpan:                r.nodeRenderer((*renderRunner).renderCodeSpan),
+		ast.KindEmphasis:                r.nodeRenderer((*renderRunner).renderEmphasis),
+		ast.KindStrong:                  r.nodeRenderer((*renderRunner).renderStrong),
+		ast.KindImage:                   r.nodeRenderer((*renderRunner).renderImage),
+		ast.KindLink:                    r.nodeRenderer((*renderRunner).renderLink),
+		ast.KindRawHTML:                 r.nodeRenderer((*renderRunner).renderRawHTML),
+		ast.KindText:                    r.nodeRenderer((*renderRunner).renderText),
+		east.KindTable:                  r.nodeRenderer((*renderRunner).renderTable),
+		east.KindTableHeader:            r.nodeRenderer((*renderRunner).renderTableHeader),
+		east.KindTableRow:               r.nodeRenderer((*renderRunner).renderTableRow),
+		east.KindTableCell:              r.nodeRenderer((*renderRunner).renderTableCell),
+		east.KindStrikethrough:          r.nodeRenderer((*renderRunner).renderStrikethrough),
+		east.KindFootnoteDefinition:     r.nodeRenderer((*renderRunner).renderFootnote),
+		east.KindFootnoteReference:      r.nodeRenderer((*renderRunner).renderFootnoteLink),
+		east.KindDefinitionList:         r.nodeRenderer((*renderRunner).renderDefinitionList),
+		east.KindDefinitionTerm:         r.nodeRenderer((*renderRunner).renderDefinitionTerm),
+		east.KindDefinitionDescription:  r.nodeRenderer((*renderRunner).renderDefinitionDescription),
 	}
 }
 
@@ -408,12 +410,19 @@ func (r *renderRunner) renderList(w util.BufWriter, source []byte, node ast.Node
 	if entering {
 		r.writeBlockSeparator(node)
 		lc := listContext{
-			list: n,
-			num:  n.Start,
+			list:    n,
+			num:     n.Start,
+			aligned: true,
 		}
 		if n.IsOrdered() {
 			lc.gitDiffFriendly = isGitDiffFriendlyOrderedList(n, source)
 			lc.aligned = isAlignedOrderedList(n, source, r.rc.config.TabWidth)
+			for _, ancestor := range r.rc.listStack {
+				if !ancestor.aligned {
+					lc.aligned = false
+					break
+				}
+			}
 		}
 		r.rc.listStack = append(r.rc.listStack, lc)
 	} else {
@@ -506,6 +515,24 @@ func (r *renderRunner) renderThematicBreak(w util.BufWriter, source []byte, node
 	return ast.WalkContinue, nil
 }
 
+func (r *renderRunner) renderLinkReferenceDefinition(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if status, handled := r.handleIgnoredNode(node, entering); handled {
+		return status, nil
+	}
+	if !entering {
+		return ast.WalkContinue, nil
+	}
+
+	n := node.(*ast.LinkReferenceDefinition)
+	r.writeBlockSeparator(node)
+	r.writeLinkReferenceLabel(n.Label.Value(source))
+	r.rc.w.WriteBytes([]byte(": "))
+	r.writeURL(n.Destination.Bytes(source), "")
+	r.writeLinkTitle(n.Title.Value(source))
+	r.rc.w.FlushLine()
+	return ast.WalkSkipChildren, nil
+}
+
 // --- Inline node renderers ---
 
 func (r *renderRunner) renderText(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -528,8 +555,15 @@ func (r *renderRunner) renderText(w util.BufWriter, source []byte, node ast.Node
 
 	r.rc.w.WriteBytes(text)
 	if n.HardLineBreak() {
-		r.rc.w.WriteBytes([]byte("\\"))
-		r.rc.w.EndLine()
+		if hardLineBreakUsesSpaces(n, source) {
+			r.rc.w.PushPreserveTrailingWhitespace()
+			r.rc.w.WriteBytes([]byte("  "))
+			r.rc.w.EndLine()
+			r.rc.w.PopPreserveTrailingWhitespace()
+		} else {
+			r.rc.w.WriteBytes([]byte("\\"))
+			r.rc.w.EndLine()
+		}
 	} else if n.SoftLineBreak() {
 		switch r.rc.config.ProseWrap {
 		case ProseWrapNever:
@@ -989,7 +1023,11 @@ func isUnicodeWhitespace(r rune) bool {
 
 func (r *renderRunner) renderCodeSpan(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if entering {
-		content := node.(*ast.CodeSpan).Value.Bytes(source)
+		content := codeSpanContent(node.(*ast.CodeSpan), source, r.rc.config.ProseWrap == ProseWrapPreserve)
+		if bytes.ContainsRune(content, '\n') {
+			r.rc.w.PushPreserveTrailingWhitespace()
+			defer r.rc.w.PopPreserveTrailingWhitespace()
+		}
 
 		backtickLen := minNotPresentContinuousCount(string(content), '`')
 		ticks := strings.Repeat("`", backtickLen)
@@ -998,7 +1036,7 @@ func (r *renderRunner) renderCodeSpan(w util.BufWriter, source []byte, node ast.
 		endsWithSpace := len(content) > 0 && unicode.IsSpace(rune(content[len(content)-1]))
 		beginsWithTick := len(content) > 0 && content[0] == '`'
 		endsWithTick := len(content) > 0 && content[len(content)-1] == '`'
-		onlySpace := len(content) > 0 && bytes.TrimFunc(content, unicode.IsSpace) == nil
+		onlySpace := len(content) > 0 && len(bytes.TrimFunc(content, unicode.IsSpace)) == 0
 
 		pad := ""
 		if beginsWithTick || endsWithTick || (beginsWithSpace && endsWithSpace && !onlySpace) {
@@ -1022,10 +1060,15 @@ func (r *renderRunner) renderLink(w util.BufWriter, source []byte, node ast.Node
 		}
 		r.rc.w.WriteBytes([]byte("["))
 	} else {
-		r.rc.w.WriteBytes([]byte("]("))
-		r.writeURL(n.Destination.Bytes(source), ")")
-		r.writeLinkTitle(n.Title.Bytes(source))
-		r.rc.w.WriteBytes([]byte(")"))
+		r.rc.w.WriteBytes([]byte("]"))
+		if n.Reference != nil {
+			r.writeLinkReferenceSuffix(n.Reference, source)
+		} else {
+			r.rc.w.WriteBytes([]byte("("))
+			r.writeURL(n.Destination.Bytes(source), ")")
+			r.writeLinkTitle(n.Title.Value(source))
+			r.rc.w.WriteBytes([]byte(")"))
+		}
 		if r.inFillWrap() {
 			r.rc.singleLineDepth--
 		}
@@ -1035,13 +1078,37 @@ func (r *renderRunner) renderLink(w util.BufWriter, source []byte, node ast.Node
 
 func (r *renderRunner) renderImage(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	n := node.(*ast.Image)
+	alt, hasOriginalAlt := originalImageAlt(n, source)
+	if hasOriginalAlt && !entering {
+		return ast.WalkContinue, nil
+	}
 	if entering {
+		if hasOriginalAlt {
+			if n.Reference != nil && n.Reference.ReferenceLinkKind != ast.ReferenceLinkKindFull {
+				alt = collapseWhitespace(alt)
+			}
+			r.rc.w.WriteBytes([]byte("![" + alt + "]"))
+			if n.Reference != nil {
+				r.writeLinkReferenceSuffix(n.Reference, source)
+			} else {
+				r.rc.w.WriteBytes([]byte("("))
+				r.writeURL(n.Destination.Bytes(source), ")")
+				r.writeLinkTitle(n.Title.Value(source))
+				r.rc.w.WriteBytes([]byte(")"))
+			}
+			return ast.WalkSkipChildren, nil
+		}
 		r.rc.w.WriteBytes([]byte("!["))
 	} else {
-		r.rc.w.WriteBytes([]byte("]("))
-		r.writeURL(n.Destination.Bytes(source), ")")
-		r.writeLinkTitle(n.Title.Bytes(source))
-		r.rc.w.WriteBytes([]byte(")"))
+		r.rc.w.WriteBytes([]byte("]"))
+		if n.Reference != nil {
+			r.writeLinkReferenceSuffix(n.Reference, source)
+		} else {
+			r.rc.w.WriteBytes([]byte("("))
+			r.writeURL(n.Destination.Bytes(source), ")")
+			r.writeLinkTitle(n.Title.Value(source))
+			r.rc.w.WriteBytes([]byte(")"))
+		}
 	}
 	return ast.WalkContinue, nil
 }
@@ -1049,10 +1116,14 @@ func (r *renderRunner) renderImage(w util.BufWriter, source []byte, node ast.Nod
 func (r *renderRunner) renderAutoLink(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	n := node.(*ast.AutoLink)
 	if entering {
-		r.rc.w.WriteBytes([]byte("<"))
-		r.rc.w.WriteBytes(n.Destination.Bytes(source))
-	} else {
-		r.rc.w.WriteBytes([]byte(">"))
+		if !n.Text.IsEmpty() {
+			r.rc.w.WriteBytes(n.Text.Bytes(source))
+		} else {
+			r.rc.w.WriteBytes([]byte("<"))
+			r.rc.w.WriteBytes(n.Destination.Bytes(source))
+			r.rc.w.WriteBytes([]byte(">"))
+		}
+		return ast.WalkSkipChildren, nil
 	}
 	return ast.WalkContinue, nil
 }
@@ -1100,7 +1171,7 @@ func (r *renderRunner) renderTable(w util.BufWriter, source []byte, node ast.Nod
 				}
 			}
 			text := r.renderCellContent(cell, source)
-			width := len(text) // TODO: proper display width for CJK
+			width := displayWidth(text)
 			if colIdx >= len(colWidths) {
 				colWidths = append(colWidths, max(3, width))
 			} else if width > colWidths[colIdx] {
@@ -1108,6 +1179,11 @@ func (r *renderRunner) renderTable(w util.BufWriter, source []byte, node ast.Nod
 			}
 			rowCells = append(rowCells, cellInfo{text: text, width: width})
 			colIdx++
+		}
+		if len(rows) > 0 {
+			for len(rowCells) > 1 && rowCells[len(rowCells)-1].text == "" {
+				rowCells = rowCells[:len(rowCells)-1]
+			}
 		}
 		rows = append(rows, rowCells)
 	}
@@ -1153,7 +1229,8 @@ func (r *renderRunner) renderCellContent(cell ast.Node, source []byte) string {
 			switch n := n.(type) {
 			case *ast.Text:
 				if entering {
-					r.rc.w.WriteBytes([]byte(n.Value.Value(source)))
+					text := strings.ReplaceAll(n.Value.Value(source), "|", `\|`)
+					r.rc.w.WriteBytes([]byte(text))
 				}
 			case *ast.Emphasis:
 				marker := r.emphasisMarker(n, source)
@@ -1162,7 +1239,7 @@ func (r *renderRunner) renderCellContent(cell ast.Node, source []byte) string {
 				r.rc.w.WriteBytes([]byte("**"))
 			case *ast.CodeSpan:
 				if entering {
-					content := n.Value.Bytes(source)
+					content := codeSpanContent(n, source, r.rc.config.ProseWrap == ProseWrapPreserve)
 					// Escape pipes in table cells.
 					content = bytes.ReplaceAll(content, []byte("|"), []byte(`\|`))
 					backtickLen := minNotPresentContinuousCount(string(content), '`')
@@ -1171,7 +1248,7 @@ func (r *renderRunner) renderCellContent(cell ast.Node, source []byte) string {
 					endsWithTick := len(content) > 0 && content[len(content)-1] == '`'
 					beginsWithSpace := len(content) > 0 && unicode.IsSpace(rune(content[0]))
 					endsWithSpace := len(content) > 0 && unicode.IsSpace(rune(content[len(content)-1]))
-					onlySpace := len(content) > 0 && bytes.TrimFunc(content, unicode.IsSpace) == nil
+					onlySpace := len(content) > 0 && len(bytes.TrimFunc(content, unicode.IsSpace)) == 0
 					pad := ""
 					if beginsWithTick || endsWithTick || (beginsWithSpace && endsWithSpace && !onlySpace) {
 						pad = " "
@@ -1185,26 +1262,40 @@ func (r *renderRunner) renderCellContent(cell ast.Node, source []byte) string {
 				if entering {
 					r.rc.w.WriteBytes([]byte("["))
 				} else {
-					r.rc.w.WriteBytes([]byte("]("))
-					r.writeURL(n.Destination.Bytes(source), ")")
-					r.writeLinkTitle(n.Title.Bytes(source))
-					r.rc.w.WriteBytes([]byte(")"))
+					r.rc.w.WriteBytes([]byte("]"))
+					if n.Reference != nil {
+						r.writeLinkReferenceSuffix(n.Reference, source)
+					} else {
+						r.rc.w.WriteBytes([]byte("("))
+						r.writeURL(n.Destination.Bytes(source), ")")
+						r.writeLinkTitle(n.Title.Value(source))
+						r.rc.w.WriteBytes([]byte(")"))
+					}
 				}
 			case *ast.Image:
 				if entering {
 					r.rc.w.WriteBytes([]byte("!["))
 				} else {
-					r.rc.w.WriteBytes([]byte("]("))
-					r.writeURL(n.Destination.Bytes(source), ")")
-					r.writeLinkTitle(n.Title.Bytes(source))
-					r.rc.w.WriteBytes([]byte(")"))
+					r.rc.w.WriteBytes([]byte("]"))
+					if n.Reference != nil {
+						r.writeLinkReferenceSuffix(n.Reference, source)
+					} else {
+						r.rc.w.WriteBytes([]byte("("))
+						r.writeURL(n.Destination.Bytes(source), ")")
+						r.writeLinkTitle(n.Title.Value(source))
+						r.rc.w.WriteBytes([]byte(")"))
+					}
 				}
 			case *ast.AutoLink:
 				if entering {
-					r.rc.w.WriteBytes([]byte("<"))
-					r.rc.w.WriteBytes(n.Destination.Bytes(source))
-				} else {
-					r.rc.w.WriteBytes([]byte(">"))
+					if !n.Text.IsEmpty() {
+						r.rc.w.WriteBytes(n.Text.Bytes(source))
+					} else {
+						r.rc.w.WriteBytes([]byte("<"))
+						r.rc.w.WriteBytes(n.Destination.Bytes(source))
+						r.rc.w.WriteBytes([]byte(">"))
+					}
+					return ast.WalkSkipChildren, nil
 				}
 			case *ast.RawHTML:
 				if entering {
@@ -1604,7 +1695,9 @@ func (r *renderRunner) endFillWrap() {
 
 	prefixWidth := r.rc.w.PrefixWidth()
 	wrapped := fillWrap(content, r.rc.config.PrintWidth, prefixWidth)
+	r.rc.w.PushPreserveTrailingWhitespace()
 	r.rc.w.WriteBytes([]byte(wrapped))
+	r.rc.w.PopPreserveTrailingWhitespace()
 }
 
 // inFillWrap reports whether inline content is currently being buffered
@@ -1672,18 +1765,11 @@ func fillWrap(text string, printWidth, prefixWidth int) string {
 	return result.String()
 }
 
-// displayWidth returns the display width of a string, counting CJK
-// characters as double-width.
+// displayWidth returns the monospace display width of a string. Grapheme-aware
+// measurement keeps CJK, emoji, combining marks, and joined emoji sequences
+// aligned with Prettier's table and wrapping calculations.
 func displayWidth(s string) int {
-	width := 0
-	for _, r := range s {
-		if isCJKRange(r) {
-			width += 2
-		} else {
-			width++
-		}
-	}
-	return width
+	return uniseg.StringWidth(s)
 }
 
 func displayWidthBeforeFirstLineBreak(s string) int {
@@ -1698,6 +1784,52 @@ func displayWidthAfterLastLineBreak(s string) int {
 		return displayWidth(s[idx+1:])
 	}
 	return displayWidth(s)
+}
+
+func hardLineBreakUsesSpaces(n *ast.Text, source []byte) bool {
+	if n.Value.IsOwned() {
+		return false
+	}
+	stop := n.Value.Index().Stop
+	return stop < len(source) && source[stop] == ' '
+}
+
+func codeSpanContent(n *ast.CodeSpan, source []byte, preserveLineBreaks bool) []byte {
+	if n.Value.IsOwned() || len(n.Value.Indices()) < 2 {
+		return n.Value.Bytes(source)
+	}
+
+	indices := n.Value.Indices()
+	segments := sourceSegmentsOf(n.Parent())
+	var content []byte
+	preserveSourceGaps := n.Parent() != nil && n.Parent().Parent() != nil && n.Parent().Parent().Kind() == ast.KindDocument
+	for indexPosition, index := range indices {
+		if preserveSourceGaps && indexPosition > 0 {
+			previous := indices[indexPosition-1]
+			content = append(content, source[previous.Stop:index.Start]...)
+		}
+		for i := range segments.Len() {
+			segment := segments.At(i)
+			if index.Start == segment.Start && index.Stop <= segment.Stop && segment.Padding > 0 {
+				content = append(content, bytes.Repeat([]byte(" "), segment.Padding)...)
+				break
+			}
+		}
+		content = append(content, source[index.Start:index.Stop]...)
+	}
+	content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
+
+	if len(content) >= 2 && isCodeSpanSpace(content[0]) && isCodeSpanSpace(content[len(content)-1]) && len(bytes.Trim(content, " \n")) > 0 {
+		content = content[1 : len(content)-1]
+	}
+	if !preserveLineBreaks {
+		content = bytes.ReplaceAll(content, []byte("\n"), []byte(" "))
+	}
+	return content
+}
+
+func isCodeSpanSpace(ch byte) bool {
+	return ch == ' ' || ch == '\n'
 }
 
 // markBreakableSpaces replaces breakable spaces in text with the fill-wrap
@@ -1882,6 +2014,20 @@ func (r *renderRunner) writeBlockSeparator(node ast.Node) {
 		return
 	}
 
+	// Consecutive definitions are always a single-line sequence, even if the
+	// source contains blank lines between them.
+	if node.Kind() == ast.KindLinkReferenceDefinition && prev.Kind() == ast.KindLinkReferenceDefinition {
+		return
+	}
+
+	// Prettier keeps source-adjacent HTML blocks attached to a preceding
+	// paragraph or HTML block. Goldmark represents these as separate blocks.
+	if node.Kind() == ast.KindHTMLBlock &&
+		(prev.Kind() == ast.KindParagraph || prev.Kind() == ast.KindHTMLBlock) &&
+		blockNodesAreAdjacent(prev, node, r.rc.source) {
+		return
+	}
+
 	// Inside a ListItem, apply special rules:
 	if parent.Kind() == ast.KindListItem {
 		// Nested lists inside tight list items do not get blank lines.
@@ -1958,6 +2104,10 @@ func isPrettierIgnoreComment(node ast.Node, source []byte) bool {
 // writeURL writes a link/image URL. If the URL contains spaces or characters
 // that are dangerous inside the `[text](url)` syntax, it is wrapped in <>.
 func (r *renderRunner) writeURL(url []byte, dangerousChars string) {
+	if len(url) == 0 {
+		r.rc.w.WriteBytes([]byte("<>"))
+		return
+	}
 	urlStr := string(url)
 	needsAngleBrackets := strings.ContainsAny(urlStr, " "+dangerousChars)
 	if needsAngleBrackets {
@@ -1969,22 +2119,95 @@ func (r *renderRunner) writeURL(url []byte, dangerousChars string) {
 	}
 }
 
+func (r *renderRunner) writeLinkReferenceSuffix(ref *ast.ReferenceLink, source []byte) {
+	switch ref.ReferenceLinkKind {
+	case ast.ReferenceLinkKindFull:
+		r.writeLinkReferenceLabel(ref.Value.Value(source))
+	case ast.ReferenceLinkKindCollapsed:
+		r.rc.w.WriteBytes([]byte("[]"))
+	case ast.ReferenceLinkKindShortcut:
+		// The closing bracket already written by the link or image is the
+		// complete shortcut reference.
+	}
+}
+
+func (r *renderRunner) writeLinkReferenceLabel(label string) {
+	r.rc.w.WriteBytes([]byte("["))
+	for _, ch := range collapseWhitespace(label) {
+		if ch == '\\' || ch == '[' || ch == ']' {
+			r.rc.w.WriteBytes([]byte{'\\'})
+		}
+		r.rc.w.WriteRune(ch)
+	}
+	r.rc.w.WriteBytes([]byte("]"))
+}
+
+func collapseWhitespace(value string) string {
+	var result strings.Builder
+	inWhitespace := false
+	for _, ch := range value {
+		if unicode.IsSpace(ch) {
+			if !inWhitespace {
+				result.WriteByte(' ')
+				inWhitespace = true
+			}
+			continue
+		}
+		inWhitespace = false
+		result.WriteRune(ch)
+	}
+	return result.String()
+}
+
+func originalImageAlt(image *ast.Image, source []byte) (string, bool) {
+	start := image.Pos()
+	if start < 0 || start+2 > len(source) || source[start] != '!' || source[start+1] != '[' {
+		return "", false
+	}
+
+	depth := 1
+	for pos := start + 2; pos < len(source); pos++ {
+		switch source[pos] {
+		case '\\':
+			pos++
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return string(source[start+2 : pos]), true
+			}
+		}
+	}
+	return "", false
+}
+
 // writeLinkTitle writes a link/image title in the configured quote style.
-func (r *renderRunner) writeLinkTitle(title []byte) {
-	if len(title) == 0 {
+func (r *renderRunner) writeLinkTitle(title string) {
+	if title == "" {
 		return
 	}
-	titleStr := string(title)
-	q := byte('"')
-	if r.rc.config.SingleQuote {
-		q = '\''
-	}
-	// If title contains both quote types but not ")", use parens.
+	titleStr := title
+	// Parentheses avoid escaping when both quote styles are present.
 	if strings.ContainsRune(titleStr, '"') && strings.ContainsRune(titleStr, '\'') && !strings.ContainsRune(titleStr, ')') {
 		r.rc.w.WriteBytes([]byte(" (" + titleStr + ")"))
 		return
 	}
-	escaped := strings.ReplaceAll(titleStr, string(q), `\`+string(q))
+
+	q := byte('"')
+	if r.rc.config.SingleQuote {
+		q = '\''
+	}
+	alternate := byte('\'')
+	if q == '\'' {
+		alternate = '"'
+	}
+	if strings.Count(titleStr, string(q)) > strings.Count(titleStr, string(alternate)) {
+		q = alternate
+	}
+
+	escaped := strings.ReplaceAll(titleStr, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, string(q), `\`+string(q))
 	r.rc.w.WriteBytes([]byte(" " + string(q) + escaped + string(q)))
 }
 
@@ -2279,10 +2502,10 @@ func isAlignedOrderedList(list *ast.List, source []byte, tabWidth int) bool {
 	if !list.IsOrdered() || list.ChildCount() == 0 {
 		return false
 	}
-	// Check if any ancestor list is NOT aligned — if so, neither is this one.
-	// (We don't track this currently, so skip for now.)
-
 	first := list.FirstChild()
+	if orderedListItemLeadingSpaces(first, source) > 1 {
+		return true
+	}
 	firstStart := listItemContentColumn(first, source)
 	if firstStart < 0 {
 		return false
@@ -2296,6 +2519,39 @@ func isAlignedOrderedList(list *ast.List, source []byte, tabWidth int) bool {
 		return false
 	}
 	return firstStart%tabWidth == 0
+}
+
+func orderedListItemLeadingSpaces(item ast.Node, source []byte) int {
+	start := sourceListItemLineStart(item, source)
+	if start < 0 {
+		return 0
+	}
+	for start < len(source) && (source[start] == ' ' || source[start] == '\t') {
+		start++
+	}
+	for start < len(source) && source[start] >= '0' && source[start] <= '9' {
+		start++
+	}
+	if start >= len(source) || (source[start] != '.' && source[start] != ')') {
+		return 0
+	}
+	start++
+	spaces := 0
+	for start < len(source) && (source[start] == ' ' || source[start] == '\t') {
+		spaces++
+		start++
+	}
+	return spaces
+}
+
+func blockNodesAreAdjacent(previous, current ast.Node, source []byte) bool {
+	_, previousEnd, previousOK := nodeLineRange(previous)
+	currentStart, _, currentOK := nodeLineRange(current)
+	if !previousOK || !currentOK || previousEnd > currentStart {
+		return false
+	}
+	between := source[previousEnd:currentStart]
+	return len(bytes.TrimSpace(between)) == 0 && bytes.Count(between, []byte("\n")) <= 1
 }
 
 // listItemContentColumn returns the 0-based column of the first content

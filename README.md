@@ -106,6 +106,8 @@ r := prettier.NewRenderer(
 Headings (ATX and setext), paragraphs, blockquotes, ordered and unordered lists,
 list items, fenced and indented code blocks, thematic breaks, inline code,
 emphasis, strong, links, autolinks, images, hard breaks, raw HTML.
+Reference-style links, images, and link definitions are preserved in their full,
+collapsed, or shortcut form.
 
 ### GFM Extensions
 
@@ -143,7 +145,8 @@ Project tasks are defined in `cmd/scripts`.
 go run ./cmd/scripts ci
 go run ./cmd/scripts test
 go run ./cmd/scripts test -run TestProseWrapAlways
-go run ./cmd/scripts prettier-parity
+npm ci
+npm run prettier-parity
 ```
 
 Run `go run ./cmd/scripts help` for all targets.
@@ -155,9 +158,9 @@ It creates or updates a release pull request from Conventional Commits whenever
 changes are merged to `main`. Review and merge that pull request to create the
 Go-module tag and GitHub Release.
 
-The first automated release is `v2.0.0`, matching this module's `/v2` import
-path. The workflow creates a short-lived GitHub App token, so release PRs and
-releases trigger the repository's normal workflows. Configure the app ID as the
+The automated v2 release line began at `v2.0.0`, matching this module's `/v2`
+import path. The workflow creates a short-lived GitHub App token, so release PRs
+and releases trigger the repository's normal workflows. Configure the app ID as the
 `RELEASE_PLEASE_APP_ID` repository variable and its private key as the
 `RELEASE_PLEASE_APP_PRIVATE_KEY` repository secret before merging the workflow.
 

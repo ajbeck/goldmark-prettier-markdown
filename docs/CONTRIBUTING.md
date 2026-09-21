@@ -237,7 +237,8 @@ go run ./cmd/scripts test ./... -count=1
 go run ./cmd/scripts ci
 
 # Compare fixtures with Prettier
-go run ./cmd/scripts prettier-parity
+npm ci
+npm run prettier-parity
 ```
 
 See [PRETTIER_PARITY.md](PRETTIER_PARITY.md) for the parity process, current
@@ -262,14 +263,16 @@ to manage Go-module releases from Conventional Commits.
 When a conventional commit reaches `main`, `.github/workflows/release-please.yaml`
 creates or updates the pending release pull request. Review its generated
 changelog and version, then merge it to create the immutable tag and GitHub
-Release. The first release produced by this configuration is `v2.0.0`, which
-matches the module's `/v2` import path.
+Release. The automated release line began at `v2.0.0`, matching the module's
+`/v2` import path; the current released version is tracked in
+`.release-please-manifest.json`.
 
 Before merging a release pull request, validate it locally:
 
 ```bash
 go run ./cmd/scripts ci
-go run ./cmd/scripts prettier-parity
+npm ci
+npm run prettier-parity
 ```
 
 The workflow creates a short-lived GitHub App token, so release PRs and releases

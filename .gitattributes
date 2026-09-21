@@ -1,0 +1,2 @@
+testdata/inline/code-multiline*.md whitespace=-blank-at-eol
+testdata/inline/hard-line-break-spaces*.md whitespace=-blank-at-eol
