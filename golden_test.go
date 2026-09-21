@@ -43,14 +43,16 @@ var categories = map[string]categoryConfig{
 	"table":          {newMarkdown: newTestMarkdownGFM, variants: defaultVariants},
 	"blockquote":     {newMarkdown: newTestMarkdown, variants: proseWrapVariants},
 	"code":           {newMarkdown: newTestMarkdown, variants: defaultVariants},
-	"inline":         {newMarkdown: newTestMarkdown, variants: defaultVariants},
+	"inline":         {newMarkdown: newTestMarkdown, variants: proseWrapVariants},
 	"html":           {newMarkdown: newTestMarkdown, variants: defaultVariants},
 	"paragraph":      {newMarkdown: newTestMarkdown, variants: proseWrapVariants},
+	"reference":      {newMarkdown: newTestMarkdown, variants: defaultVariants},
 	"thematic-break": {newMarkdown: newTestMarkdown, variants: defaultVariants},
 	"ignore":         {newMarkdown: newTestMarkdown, variants: defaultVariants},
 	"strikethrough":  {newMarkdown: newTestMarkdownGFM, variants: defaultVariants},
 	"footnote":       {newMarkdown: newTestMarkdownFootnote, variants: proseWrapVariants},
 	"deflist":        {newMarkdown: newTestMarkdownDefList, variants: defaultVariants},
+	"gfm":            {newMarkdown: newTestMarkdownGFM, variants: defaultVariants},
 }
 
 func TestGolden(t *testing.T) {
